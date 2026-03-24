@@ -160,9 +160,6 @@ class AgentCore:
         return bool(msg.get("tool_calls") or msg.get("content", "").strip())
 
 
-
-
-
 if __name__ == "__main__":
     from registry_tool import get_all_tools
     import code_tools # 仅出发自动注册

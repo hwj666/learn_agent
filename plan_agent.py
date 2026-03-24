@@ -119,5 +119,4 @@ if __name__ == "__main__":
     agent.bind_tools(get_all_tools())
     planner = PlanAgent(agent)
     # ===================== 测试指令（直接改这里）=====================
-    planner.run("帮我调试一下bug.py文件，帮我修复一下，让其可以正常执行")
-    # agent.run("帮我分析当前代码结构")
+    planner.run("帮我分析当前代码结构")

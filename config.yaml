@@ -1,0 +1,33 @@
+agents:
+    simple_agent:
+        model: local_model
+        max_steps: 100
+        tool_set:
+            - dev        # 加上 dev 才能用天气/加法工具
+            - todo       # 加上 todo 才能用待办工具
+
+model_providers:
+    npu:
+        base_url: http://127.0.0.1:9090/v1
+        api_key: npu
+        provider: npu
+    local:
+        base_url: http://127.0.0.1:8080/v1
+        api_key: local
+        provider: local
+
+models:
+    npu_model:
+        model_provider: npu
+        model: "Qwen3-8B"
+        max_tokens: 4096
+        temperature: 0.6
+        top_p: 0.95
+        top_k: 20
+    local_model:
+        model_provider: local
+        model: "Qwen3-0.6B"
+        max_tokens: 4096
+        temperature: 0.6
+        top_p: 0.95
+        top_k: 20

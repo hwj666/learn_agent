@@ -3,8 +3,9 @@ agents:
         model: local_model
         max_steps: 100
         tool_set:
-            - dev        # 加上 dev 才能用天气/加法工具
-            - todo       # 加上 todo 才能用待办工具
+            - bash
+            - todo
+            - file
 
 model_providers:
     npu:

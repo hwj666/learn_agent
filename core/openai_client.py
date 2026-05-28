@@ -11,49 +11,56 @@ _ = load_dotenv()
 
 class OpenAIClient(BaseLLMClient):
     def __init__(self, config: ModelConfig):
-        # 关键修复：BaseLLMClient 接收 config 而非 provider
         super().__init__(config.provider)
-        
         self.client = AsyncOpenAI(
             api_key=config.provider.api_key or os.getenv("OPENAI_API_KEY"),
             base_url=config.provider.base_url or os.getenv("OPENAI_BASE_URL")
         )
-        
         self.model = config.model
         self.top_p = config.top_p
-        self.top_k = config.top_k
+        self.top_k = config.top_k if config.top_k is not None else 50
         self.temperature = config.temperature
 
     async def chat(
-        self, 
-        messages: list[LLMMessage], 
+        self,
+        messages: list[LLMMessage],
         tools: list[ChatCompletionToolUnionParam] | None = None,
         on_chunk: Callable[[str, str, str], Awaitable[None]] | None = None
     ) -> LLMResponse:
         """
-        流式输出 + 思考链 + 工具调用 三合一
-        on_chunk: (delta_reasoning, delta_content, status)
+        三合一能力：文本流式、思考链流式、工具调用流式合并
         """
         extra_body = {}
-        if "qwen" in self.model.lower() or "deepseek" in self.model.lower():
-            extra_body = {
-                "enable_thinking": True,
-                "top_k": self.top_k,
-                "min_p": 0
-            }
+        temperature = self.temperature
+
+        # 自动识别推理/思考模型（可根据自己的模型名扩展）
+        model_lower = self.model.lower()
+        is_reasoning_model = any(
+            keyword in model_lower 
+            for keyword in ["r1", "thinking", "qwen", "deepseek"]
+        )
+
+        if is_reasoning_model:
+            extra_body["enable_thinking"] = True
+            if self.top_k is not None:
+                extra_body["top_k"] = self.top_k
+            extra_body["min_p"] = 0
+            # 推理模型官方要求固定 temperature=1.0
+            temperature = 1.0
 
         chat_messages = [msg.to_dict() for msg in messages]
 
+        # 发起流式请求
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=chat_messages,
-            tools=tools,
+            tools=tools or None,
             stream=True,
-            temperature=self.temperature,
+            temperature=temperature,
             top_p=self.top_p,
             presence_penalty=0.1,
             frequency_penalty=0.1,
-            extra_body=extra_body
+            extra_body=extra_body if extra_body else None,
         )
 
         content = ""
@@ -66,63 +73,70 @@ class OpenAIClient(BaseLLMClient):
 
             delta = chunk.choices[0].delta
 
-            # --------------------------
-            # 1. 处理思考内容（兼容多家）
-            # --------------------------
-            r = getattr(delta, "reasoning_content", None)
-            if r:
-                reasoning += r
+            # 1. 思考链
+            reasoning_delta = getattr(delta, "reasoning_content", None)
+            if reasoning_delta:
+                reasoning += reasoning_delta
                 if on_chunk:
-                    await on_chunk(r, "", "🤔 思考中...")
+                    await on_chunk(reasoning_delta, "", "thinking")
                 continue
 
-            # --------------------------
-            # 2. 处理正常回复内容
-            # --------------------------
+            # 2. 正常文本
             if delta.content:
                 content += delta.content
                 if on_chunk:
-                    await on_chunk("", delta.content, "正在生成回复...") # 触发回调
+                    await on_chunk("", delta.content, "responding")
                 continue
 
-            # --------------------------
-            # 3. 处理工具调用流式分片
-            # --------------------------
+            # 3. 工具调用（真正流式输出，不卡顿）
             if delta.tool_calls:
-                self._merge_tool_calls(delta.tool_calls, tool_calls_buffer)
-                if on_chunk:
-                    await on_chunk("", "", "⚙️ 构思工具调用...")
-
-        # 转换为 ToolCall 列表
-        tool_calls = []
-        for idx, tool in sorted(tool_calls_buffer.items()):
-            tool_calls.append(
-                ToolCall(
-                    name=tool["name"],
-                    id=tool["id"],
-                    arguments=tool["arguments"]
-                )
+                valid_tool_calls = [tc for tc in delta.tool_calls if tc is not None]
+                if valid_tool_calls:
+                    # 实时推送工具参数片段
+                    if on_chunk:
+                        for tc in valid_tool_calls:
+                            func = getattr(tc, "function", None)
+                            arg_delta = func.arguments if (func and func.arguments) else ""
+                            if arg_delta:
+                                await on_chunk("", arg_delta, "tool_calling")
+                    # 合并工具调用
+                    self._merge_tool_calls(valid_tool_calls, tool_calls_buffer)
+        # 工具调用排序 & 格式化
+        tool_calls = [
+            ToolCall(
+                id=t["id"],
+                name=t["name"],
+                arguments=t["arguments"]
             )
+            for _, t in sorted(tool_calls_buffer.items())
+        ]
 
         return LLMResponse(
-            content=content.strip(),
-            reasoning_content=reasoning.strip(),
+            content=content.strip() or None,
+            reasoning_content=reasoning.strip() or None,
             tool_calls=tool_calls or None
         )
 
-    def _merge_tool_calls(self, delta_tool_calls, tool_calls_buffer):
-        """合并流式分片的 tool_calls"""
+    def _merge_tool_calls(self, delta_tool_calls, tool_calls_buffer: dict):
+        """流式工具调用分片合并（OpenAI 标准 SSE 协议）"""
         for tool_call_delta in delta_tool_calls:
-            idx = tool_call_delta.index
+            idx = getattr(tool_call_delta, "index", None)
+            if idx is None:
+                continue
+
             if idx not in tool_calls_buffer:
                 tool_calls_buffer[idx] = {"id": "", "name": "", "arguments": ""}
 
+            # 合并 ID
             if tool_call_delta.id:
                 tool_calls_buffer[idx]["id"] = tool_call_delta.id
 
-            func = tool_call_delta.function
-            if func:
-                if func.name:
-                    tool_calls_buffer[idx]["name"] = func.name
-                if func.arguments:
-                    tool_calls_buffer[idx]["arguments"] += func.arguments
+            # 合并函数信息
+            func = getattr(tool_call_delta, "function", None)
+            if not func:
+                continue
+
+            if func.name:
+                tool_calls_buffer[idx]["name"] = func.name
+            if func.arguments:
+                tool_calls_buffer[idx]["arguments"] += func.arguments

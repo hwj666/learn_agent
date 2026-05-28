@@ -1,30 +1,31 @@
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, Optional, Tuple
+import sys
 
-
-@dataclass
+@dataclass(slots=True)
 class ToolCall:
-    """解析后的工具调用对象"""
+    id: str
     name: str
     arguments: str  # 必须是 JSON 字符串
-    id: Optional[str] = None
-
-    def __str__(self) -> str:
-        return f"ToolCall(name={self.name}, arguments={self.arguments}, id={self.id})"
 
 
-@dataclass
+@dataclass(slots=True)
 class LLMMessage:
-    """LLM 标准消息体（兼容 OpenAI / 通义 / 深度思考）"""
+    """LLM 标准消息体（终极内存优化 + 流式安全版）"""
     role: str
     content: Optional[str] = None
-    reasoning_content: Optional[str] = None  # 思维链/思考过程
-    tool_calls: Optional[List[ToolCall]] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[Tuple[ToolCall, ...]] = None
     tool_call_id: Optional[str] = None
 
+    def __post_init__(self):
+        # 角色字符串全局共享，海量消息内存暴跌
+        self.role = sys.intern(str(self.role))
+
     def to_dict(self) -> dict[str, Any]:
-        """转为 LLM API 标准字典（完全兼容 OpenAI 格式）"""
-        # 1. 工具返回结果
+        """转为 LLM API 标准字典（严格对齐 OpenAI）"""
+
+        # 1. 工具返回消息
         if self.role == "tool":
             return {
                 "role": "tool",
@@ -34,9 +35,9 @@ class LLMMessage:
 
         # 2. 助手调用工具
         if self.role == "assistant" and self.tool_calls:
-            return {
+            res = {
                 "role": "assistant",
-                "content": self.content or "",
+                "content": self.content,
                 "tool_calls": [
                     {
                         "id": call.id,
@@ -48,29 +49,34 @@ class LLMMessage:
                     } for call in self.tool_calls
                 ]
             }
+            if self.reasoning_content is not None:
+                res["reasoning_content"] = self.reasoning_content
+            return res
 
-        # 3. 普通消息（system / user / 纯文本 assistant）
+        # 3. 普通消息
         result = {"role": self.role}
-        if self.content is not None:
+
+        if self.role == "assistant":
             result["content"] = self.content
+        elif self.content is not None:
+            result["content"] = self.content
+
         if self.reasoning_content is not None:
             result["reasoning_content"] = self.reasoning_content
+
         return result
 
 
-@dataclass
+@dataclass(slots=True)
 class LLMResponse:
     """LLM 响应统一格式"""
     content: str
     reasoning_content: Optional[str] = None
-    tool_calls: Optional[List[ToolCall]] = None
+    tool_calls: Optional[Tuple[ToolCall, ...]] = None
 
 
 class LLMMessageBuilder:
-    """
-    消息构造器（业务层专用，避免手写 role 出错）
-    你的 ReactAgent 正在用这个，完全匹配！
-    """
+    """业务层消息构造器（完全兼容旧代码）"""
     @staticmethod
     def system(content: str) -> LLMMessage:
         return LLMMessage(role="system", content=content)
@@ -83,19 +89,21 @@ class LLMMessageBuilder:
     def assistant(
         content: Optional[str] = None,
         reasoning: Optional[str] = None,
-        tool_calls: Optional[List[ToolCall]] = None
+        tool_calls: Optional[list | Tuple[ToolCall, ...]] = None
     ) -> LLMMessage:
+        t_calls = tuple(tool_calls) if tool_calls is not None else None
+
         return LLMMessage(
             role="assistant",
             content=content,
             reasoning_content=reasoning,
-            tool_calls=tool_calls
+            tool_calls=t_calls
         )
 
     @staticmethod
-    def tool(tool_call_id: str, content: str) -> LLMMessage:
+    def tool(id: str, content: str) -> LLMMessage:
         return LLMMessage(
             role="tool",
-            tool_call_id=tool_call_id,
+            tool_call_id=id,
             content=content
         )

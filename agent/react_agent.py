@@ -1,152 +1,135 @@
+import json
+import os
+import logging
 import asyncio
-from core.openai_client import OpenAIClient
+from typing import List, Dict, Any, Optional
+
+from core.config import AgentConfig
 from core.message import LLMMessage, LLMMessageBuilder
-from core.config import ModelConfig
-from tools.execute import ToolExecutor
+from core.openai_client import OpenAIClient
+from tools.execute import ToolExecutor 
+import aiofiles 
+from utils.stream_print_handler import StreamPrintHandler
 
-# 引入 Rich 相关组件
-from rich.live import Live
-from rich.panel import Panel
-from rich.layout import Layout
-from rich.text import Text
-from rich.console import Console
-
-# 初始化控制台（避免多线程冲突）
-console = Console()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("ReactAgent")
 
 class ReactAgent:
-    def __init__(self, model_config: ModelConfig, max_steps=5, allowed_toolsets=None):
-        self.client = OpenAIClient(model_config)
-        self.max_steps = max_steps
-        self.system_prompt = "你是一个具备自主思考和行动能力的 ReAct Agent"
-        self.memory: list[LLMMessage] = [LLMMessage(role="system", content=self.system_prompt)]
-        self.executor = ToolExecutor(allowed_toolsets=allowed_toolsets)
+    def __init__(self, config: AgentConfig, session_id: str):
+        self.session_id = session_id
+        self.max_steps = config.max_steps
+        self.max_memory_len = getattr(config, "max_memory_len", 20) 
+        
+        work_dir = "./work"
+        os.makedirs(work_dir, exist_ok=True)
+        self.history_file = os.path.join(work_dir, f"history_{session_id}.jsonl")
 
-    def _create_layout(self, step: int, status: str, reasoning: str, content: str, logs: list) -> Layout:
-        """构建高级双栏全屏 UI 布局"""
-        layout = Layout()
-        layout.split_row(
-            Layout(name="left", ratio=1),
-            Layout(name="right", ratio=1)
-        )
+        self.client = OpenAIClient(config.model_config)
+        self.executor = ToolExecutor(allowed_toolsets=config.tool_set)
+        
+        self.system_prompt = "你是一个具备自主思考和行动能力的 ReAct Agent，工作目录为./work，后续要创建的文件都在这个目录下"
+        self.memory: List[LLMMessage] = []
+        self._file_lock = asyncio.Lock()
+        
+        self.ctx = {
+            "todo_store": {}, 
+            "session_id": session_id, 
+            "agent_id": 1, 
+            "sandbox_read_dirs": ["./"],
+            "sandbox_write_dirs": ["./work"]
+        }
+        self.timeline_events: List[Dict[str, Any]] = []
 
-        # 左侧：状态与思维链看板
-        status_text = Text.assemble(
-            ("当前进度: ", "bold white"), (f"{step}/{self.max_steps}\n", "bold cyan"),
-            ("当前状态: ", "bold white"), (f"{status}\n\n", "bold yellow"),
-            ("🤔 模型思考思维链 (Reasoning):\n", "bold magenta"),
-            (reasoning if reasoning else "等待大模型思考...", "white" if reasoning else "dim white")
-        )
-        layout["left"].update(Panel(status_text, title="📊 Agent 核心状态", border_style="cyan"))
+    async def initialize(self):
+        if not self.memory:
+            await self._add_message_async(LLMMessage(role="system", content=self.system_prompt))
 
-        # 右侧：拆分为“模型原生回复”与“工具执行日志”上下两部分
-        layout["right"].split_column(
-            Layout(name="reply", ratio=1),
-            Layout(name="logs", ratio=1)
-        )
+    def _trim_memory(self):
+        if len(self.memory) <= self.max_memory_len:
+            return
 
-        # 右上：大模型正文输出
-        layout["right"]["reply"].update(Panel(
-            content if content else "等待正文输出...",
-            title="💬 模型原生回复 (Content)",
-            border_style="blue"
-        ))
+        system_msg = self.memory[0]
+        non_system_memory = self.memory[1:]
+        target_keep = self.max_memory_len - 1
 
-        # 右下：运行日志
-        log_content = "\n".join(logs[-10:])  # 限制最新 10 行
-        layout["right"]["logs"].update(Panel(log_content, title="📜 系统工具日志", border_style="green"))
+        safe_cut_idx = None
+        for i in reversed(range(len(non_system_memory))):
+            if non_system_memory[i].role == "user":
+                safe_cut_idx = i
+                break
 
-        return layout
+        if safe_cut_idx is not None:
+            trimmed = non_system_memory[safe_cut_idx:]
+        else:
+            trimmed = non_system_memory[-target_keep:] if len(non_system_memory) > target_keep else non_system_memory
+
+        self.memory = [system_msg] + trimmed
+
+    async def _add_message_async(self, msg: LLMMessage):
+        self.memory.append(msg)
+        self._trim_memory()
+        
+        async with self._file_lock:
+            try:
+                msg_dict = msg.to_dict()
+                async with aiofiles.open(self.history_file, "a", encoding="utf-8") as f:
+                    await f.write(json.dumps(msg_dict, ensure_ascii=False) + "\n")
+            except Exception as e:
+                logger.warning(f"消息持久化失败: {e}")
 
     async def run(self, user_query: str) -> str:
-        self.memory.append(LLMMessageBuilder.user(user_query))
+        await self.initialize()
+        await self._add_message_async(LLMMessageBuilder.user(user_query))
+        
         step = 0
-        logs = [f"[bold blue]🧑💻 用户输入:[/bold blue] {user_query}"]
-
-        # 实时渲染的核心状态变量
-        current_reasoning = ""
-        current_content = ""
-        current_status = "初始化画布"
-
-        # 开启全屏锁定模式
-        with Live(
-            self._create_layout(step, current_status, current_reasoning, current_content, logs),
-            refresh_per_second=8,
-            screen=False,
-            console=console
-        ) as live:
-            while step < self.max_steps:
-                step += 1
-                current_status = f"正在请求模型 (Step {step})"
-                # 每一轮开始，清空上一轮的单次流式输出缓存
-                current_reasoning = ""
-                current_content = ""
-                live.update(self._create_layout(step, current_status, current_reasoning, current_content, logs))
-                await asyncio.sleep(0.01)  # 让出事件循环，避免UI卡死
-
-                # 流式更新函数（定义在循环内，绑定当前 step）
-                async def on_chunk_received(delta_reasoning: str, delta_content: str, status_text: str):
-                    nonlocal current_reasoning, current_content, current_status
-                    current_status = f"Step {step} - {status_text}"
-
-                    # 增量拼接
-                    if delta_reasoning:
-                        current_reasoning += delta_reasoning
-                    if delta_content:
-                        current_content += delta_content
-
-                    # 刷新UI
-                    live.update(self._create_layout(step, current_status, current_reasoning, current_content, logs))
-
-                # 1. 传入回调，请求大模型
+        while step < self.max_steps:
+            step += 1
+            logger.info(f"==================== STEP {step}/{self.max_steps} 开始 ====================")
+            
+            sph = StreamPrintHandler()
+            try:
+                available_tools = self.executor.get_schemas() if step < self.max_steps else None
+                
                 llm_response = await self.client.chat(
                     messages=self.memory,
-                    tools=self.executor.get_schemas(),
-                    on_chunk=on_chunk_received
+                    tools=available_tools,
+                    on_chunk=sph.on_chunk
                 )
+                print("\033[0m")  # 仅关闭颜色，不输出多余空行
+            except Exception as e:
+                logger.error(f"LLM 调用异常: {str(e)}")
+                print(f"\033[31m[❌ 错误]: 大模型调用失败\033[0m")
+                return f"错误：调用模型时发生异常: {str(e)}"
 
-                # 最终状态同步
-                current_reasoning = llm_response.reasoning_content or ""
-                current_content = llm_response.content or ""
-                live.update(self._create_layout(step, current_status, current_reasoning, current_content, logs))
+            assistant_msg = LLMMessageBuilder.assistant(
+                content=llm_response.content or "",
+                reasoning=getattr(llm_response, "reasoning_content", ""),
+                tool_calls=llm_response.tool_calls or None
+            )
+            await self._add_message_async(assistant_msg)
 
-                # 助手消息入记忆
-                assistant_msg = LLMMessageBuilder.assistant(
-                    content=llm_response.content,
-                    reasoning=llm_response.reasoning_content,
-                    tool_calls=llm_response.tool_calls if llm_response.tool_calls else None
-                )
-                self.memory.append(assistant_msg)
+            # 最终回答 → logger
+            if not llm_response.tool_calls:
+                answer = llm_response.content or "未生成有效回答"
+                logger.info(f"[最终解答]: {answer}")
+                logger.info("======================== ✨ 任务完成 ========================")
+                return answer
 
-                # 情况 A：模型给出最终回答
-                if not llm_response.tool_calls:
-                    current_status = "🎉 任务完成"
-                    logs.append(f"[bold green]✅ 最终回答已就绪[/bold green]")
-                    live.update(self._create_layout(step, current_status, current_reasoning, current_content, logs))
-                    await asyncio.sleep(1)
-                    return llm_response.content
+            # 工具调用 → logger
+            logger.info("[工具调用请求]")
+            for tc in llm_response.tool_calls:
+                logger.info(f"  调用工具: {tc.name} | 参数: {tc.arguments}")
+            
+            tool_responses = await self.executor.execute(
+                tool_calls=llm_response.tool_calls, 
+                ctx=self.ctx,
+                timeout=30.0
+            )
+            logger.info("所有并行工具执行完毕")
 
-                # 情况 C：执行工具
-                current_status = f"Step {step} - 正在处理工具调用"
-                for tool_call in llm_response.tool_calls:
-                    logs.append(f"[bold yellow]🛠️ 触发工具:[/bold yellow] {tool_call.name}")
-                    logs.append(f"[dim white]  参数: {tool_call.arguments}[/dim white]")
-                    live.update(self._create_layout(step, current_status, current_reasoning, current_content, logs))
-                    await asyncio.sleep(0.01)
+            for response in tool_responses:
+                await self._add_message_async(response)
 
-                    # 执行工具
-                    tool_response = await self.executor.execute(tool_call, ctx={"agent_id": "react1"})
-                    self.memory.append(tool_response)
-
-                    # 日志截断
-                    truncated_res = tool_response.content[:80] + "..." if len(tool_response.content) > 80 else tool_response.content
-                    logs.append(f"[bold magenta]📥 工具返回:[/bold magenta] {truncated_res}")
-                    live.update(self._create_layout(step, current_status, current_reasoning, current_content, logs))
-                    await asyncio.sleep(0.01)
-
-            # 情况 B：步数耗尽
-            current_status = "❌ 步数超限拦截"
-            logs.append("[bold red]❌ 错误: 达到最大迭代步数，中断后续工具执行。[/bold red]")
-            live.update(self._create_layout(step, current_status, current_reasoning, current_content, logs))
-            await asyncio.sleep(1)
-            return "错误：超过最大迭代步数，未能生成有效解答。"
+        error_msg = "超过最大迭代步数限制。"
+        logger.error(error_msg)
+        return "错误：超过最大迭代步数，未能生成有效解答。"

@@ -2,6 +2,8 @@
 ```shell
 pip install openai
 pip install python-dotenv
+pip install pyyaml
+pip install aiofiles
 ```
 # donwloade model
 use qwen3.5-0.8b model

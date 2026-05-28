@@ -3,7 +3,7 @@ import inspect
 from pathlib import Path
 import sys
 import threading
-from typing import Any, Dict, Optional, Set
+from typing import Any, Optional, Set
 from tools.base import BaseTool
 from tools.registry import ToolRegistry
 

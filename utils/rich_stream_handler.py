@@ -19,7 +19,7 @@ class RichStreamHandler(BaseStreamHandler):
         refresh_interval: float = 0.05,
         max_buffer_size: int = 50000,
         theme: str = "monokai",
-        panel_styles: Optional[Dict] = None
+        panel_styles: Optional[Dict] = None,
     ):
         super().__init__()
         self.console = console or Console()
@@ -32,23 +32,29 @@ class RichStreamHandler(BaseStreamHandler):
         self.panel_styles = panel_styles or {
             "think": {
                 "active": {"border_style": "yellow", "title": "🧠 思考链 (Reasoning)"},
-                "done": {"border_style": "dim", "title": "🧠 思考链 (已结束)"}
+                "done": {"border_style": "dim", "title": "🧠 思考链 (已结束)"},
             },
             "tool": {
-                "active": {"border_style": "magenta", "title": "🛠️ 工具调用参数 (Tool Calls)"},
-                "done": {"border_style": "dim", "title": "🛠️ 工具调用 (已就绪)"}
+                "active": {
+                    "border_style": "magenta",
+                    "title": "🛠️ 工具调用参数 (Tool Calls)",
+                },
+                "done": {"border_style": "dim", "title": "🛠️ 工具调用 (已就绪)"},
             },
             "respond": {
-                "active": {"border_style": "green", "title": "🤖 模型回复 (Assistant Response)"},
-                "done": {"border_style": "dim", "title": "🤖 模型回复 (完成)"}
-            }
+                "active": {
+                    "border_style": "green",
+                    "title": "🤖 模型回复 (Assistant Response)",
+                },
+                "done": {"border_style": "dim", "title": "🤖 模型回复 (完成)"},
+            },
         }
 
         self.stats = {
             "total_updates": 0,
             "total_renders": 0,
             "max_render_time": 0.0,
-            "slow_renders": 0
+            "slow_renders": 0,
         }
 
         self.reset()
@@ -72,11 +78,13 @@ class RichStreamHandler(BaseStreamHandler):
             console=self.console,
             auto_refresh=False,
             transient=False,
-            vertical_overflow="visible"
+            vertical_overflow="visible",
         )
         self.live.start()
 
-    async def close(self, exc_type: Optional[Type[BaseException]], exc_val: Optional[BaseException]) -> None:
+    async def close(
+        self, exc_type: Optional[Type[BaseException]], exc_val: Optional[BaseException]
+    ) -> None:
         if self.live:
             self.is_complete = True
             try:
@@ -88,12 +96,14 @@ class RichStreamHandler(BaseStreamHandler):
                 self.live = None
 
                 if self.stats["total_updates"] > 0:
-                    avg_render_time = self.stats["total_renders"] / self.stats["total_updates"]
+                    avg_render_time = (
+                        self.stats["total_renders"] / self.stats["total_updates"]
+                    )
                     self.console.print(
                         f"\n[dim]📊 渲染统计: "
                         f"总更新 {self.stats['total_updates']} 次, "
-                        f"平均渲染 {avg_render_time*1000:.1f}ms, "
-                        f"最慢 {self.stats['max_render_time']*1000:.1f}ms[/dim]"
+                        f"平均渲染 {avg_render_time * 1000:.1f}ms, "
+                        f"最慢 {self.stats['max_render_time'] * 1000:.1f}ms[/dim]"
                     )
                 self.console.print()
 
@@ -113,7 +123,7 @@ class RichStreamHandler(BaseStreamHandler):
     def _extract_tool_calls(self) -> str:
         """
         提取所有工具调用片段中的 arguments 并拼接成一个完整的 JSON 字符串。
-        
+
         关键逻辑：
         1. 每个片段都是 [{"index":0, "id":..., "name":..., "arguments":"..."}]
         2. 我们只需要提取每个片段中的 arguments 字符串部分
@@ -121,15 +131,15 @@ class RichStreamHandler(BaseStreamHandler):
         """
         if not self.tool_calling_fragments:
             return ""
-        
+
         # 收集所有 arguments 字符串片段
         arguments_parts = []
-        
+
         for fragment in self.tool_calling_fragments:
             fragment = fragment.strip()
             if not fragment:
                 continue
-            
+
             try:
                 # 解析片段为 JSON 数组
                 parsed = json.loads(fragment)
@@ -148,10 +158,10 @@ class RichStreamHandler(BaseStreamHandler):
                 else:
                     # 最后手段：直接添加片段
                     arguments_parts.append(fragment)
-        
+
         # 拼接所有 arguments 片段
         full_arguments = "".join(arguments_parts)
-        
+
         # 尝试构建完整的工具调用对象
         try:
             # 尝试解析完整的 arguments JSON
@@ -161,17 +171,23 @@ class RichStreamHandler(BaseStreamHandler):
                 "index": 0,
                 "id": "merged",
                 "name": "manager_todo",
-                "arguments": parsed_args
+                "arguments": parsed_args,
             }
             return json.dumps([tool_call], ensure_ascii=False, indent=2)
         except json.JSONDecodeError:
             # 如果 arguments 还不是完整的 JSON，返回原始拼接
-            return json.dumps([{
-                "index": 0,
-                "id": "merged",
-                "name": "manager_todo",
-                "arguments": full_arguments
-            }], ensure_ascii=False, indent=2)
+            return json.dumps(
+                [
+                    {
+                        "index": 0,
+                        "id": "merged",
+                        "name": "manager_todo",
+                        "arguments": full_arguments,
+                    }
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
 
     def _build_renderable(self) -> Group:
         parts = []
@@ -179,7 +195,7 @@ class RichStreamHandler(BaseStreamHandler):
         try:
             thinking_text = "".join(self.thinking_buffer).strip()
             responding_text = "".join(self.responding_buffer).strip()
-            
+
             # 提取并合并工具调用参数
             tool_text = self._extract_tool_calls().strip()
 
@@ -209,10 +225,7 @@ class RichStreamHandler(BaseStreamHandler):
                     parsed = json.loads(tool_text)
                     formatted = json.dumps(parsed, ensure_ascii=False, indent=2)
                     tool_renderable = Syntax(
-                        formatted,
-                        "json",
-                        theme=self.theme,
-                        background_color="default"
+                        formatted, "json", theme=self.theme, background_color="default"
                     )
                 except (json.JSONDecodeError, ValueError):
                     tool_renderable = Text(tool_text)
@@ -223,7 +236,7 @@ class RichStreamHandler(BaseStreamHandler):
                         title=style["title"],
                         border_style=style["border_style"],
                         title_align="left",
-                        padding=(0, 1)
+                        padding=(0, 1),
                     )
                 )
 
@@ -239,7 +252,7 @@ class RichStreamHandler(BaseStreamHandler):
                         title=style["title"],
                         border_style=style["border_style"],
                         title_align="left",
-                        padding=(1, 2)
+                        padding=(1, 2),
                     )
                 )
 
@@ -249,12 +262,13 @@ class RichStreamHandler(BaseStreamHandler):
                 parts.append(Panel(placeholder, border_style="blue"))
 
             # 5. 状态栏
-            if self.stats["total_updates"] > 0 and any([thinking_text, responding_text, tool_text]):
+            if self.stats["total_updates"] > 0 and any(
+                [thinking_text, responding_text, tool_text]
+            ):
                 char_count = len(thinking_text) + len(responding_text) + len(tool_text)
                 status_text = Text(
-                    f"已接收 {char_count} 字符 | "
-                    f"更新 {self.stats['total_updates']} 次",
-                    style="dim"
+                    f"已接收 {char_count} 字符 | 更新 {self.stats['total_updates']} 次",
+                    style="dim",
                 )
                 parts.append(status_text)
 
@@ -263,7 +277,7 @@ class RichStreamHandler(BaseStreamHandler):
                 Panel(
                     f"[red]渲染错误: {str(e)}[/red]",
                     border_style="red",
-                    title="❌ 渲染异常"
+                    title="❌ 渲染异常",
                 )
             )
             self.console.print(f"[red]❌ _build_renderable 错误: {e}[/red]")
@@ -275,7 +289,7 @@ class RichStreamHandler(BaseStreamHandler):
         think: str = "",
         respond: str = "",
         tool_args: Any = "",
-        chunk_type: str = ""
+        chunk_type: str = "",
     ) -> None:
         try:
             has_changed = False
@@ -312,7 +326,11 @@ class RichStreamHandler(BaseStreamHandler):
             if respond:
                 respond_str = self._ensure_string(respond)
                 if respond_str:
-                    if self.current_stage != "respond" and not think and respond_str.strip():
+                    if (
+                        self.current_stage != "respond"
+                        and not think
+                        and respond_str.strip()
+                    ):
                         self.current_stage = "respond"
                     self.responding_buffer.append(respond_str)
                     has_changed = True
@@ -330,16 +348,20 @@ class RichStreamHandler(BaseStreamHandler):
                         self.console.print(f"[red]❌ 实时更新失败: {e}[/red]")
                         fallback = Panel(
                             f"[yellow]正在处理数据... (错误: {e})[/yellow]",
-                            border_style="yellow"
+                            border_style="yellow",
                         )
                         self.live.update(fallback, refresh=True)
 
                     render_time = time.time() - render_start
                     self.stats["total_renders"] += 1
-                    self.stats["max_render_time"] = max(self.stats["max_render_time"], render_time)
+                    self.stats["max_render_time"] = max(
+                        self.stats["max_render_time"], render_time
+                    )
                     if render_time > 0.1:
                         self.stats["slow_renders"] += 1
-                        self.console.log(f"⚠️ 渲染耗时 {render_time*1000:.1f}ms (第 {self.stats['slow_renders']} 次慢渲染)")
+                        self.console.log(
+                            f"⚠️ 渲染耗时 {render_time * 1000:.1f}ms (第 {self.stats['slow_renders']} 次慢渲染)"
+                        )
                     self.last_refresh_time = current_time
                 else:
                     try:
@@ -355,9 +377,9 @@ class RichStreamHandler(BaseStreamHandler):
                         Panel(
                             "[yellow]✋ 用户中断了流式输出[/yellow]",
                             border_style="yellow",
-                            title="⏹️ 流式输出已中断"
+                            title="⏹️ 流式输出已中断",
                         ),
-                        refresh=True
+                        refresh=True,
                     )
                 except Exception:
                     pass
@@ -375,6 +397,6 @@ class RichStreamHandler(BaseStreamHandler):
             "buffer_sizes": {
                 "thinking": len(self.thinking_buffer),
                 "responding": len(self.responding_buffer),
-                "tool_calling": len(self.tool_calling_fragments)
-            }
+                "tool_calling": len(self.tool_calling_fragments),
+            },
         }

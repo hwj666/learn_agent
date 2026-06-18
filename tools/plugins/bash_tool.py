@@ -12,7 +12,9 @@ from pydantic import BaseModel, Field
 # 假设这是你的基础类
 from tools.base import BaseTool
 from tools.registry import ToolRegistry
+
 logger = logging.getLogger(__name__)
+
 
 class RunCommandArgs(BaseModel):
     command: str = Field(
@@ -27,8 +29,9 @@ class RunCommandArgs(BaseModel):
     )
     timeout: int = Field(
         default=30,
-        description="命令执行的超时时间（秒），防止常驻进程死循环或卡死，默认 30 秒"
+        description="命令执行的超时时间（秒），防止常驻进程死循环或卡死，默认 30 秒",
     )
+
 
 @ToolRegistry.register(name="run_command", toolset="bash")
 class RunCommandTool(BaseTool[RunCommandArgs]):
@@ -36,11 +39,14 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
         "核心系统终端工具。可用于在 Windows(PowerShell) 或 Linux/macOS(Bash/Sh) 中执行自动化测试脚本、"
         "编译项目或查看系统环境状态。在使用前，你必须通过前置步骤明确当前运行的操作系统类型，严禁执行任何交互式命令。"
     )
+
     def __init__(self):
         self.current_os = platform.system()
         self.is_windows = self.current_os == "Windows"
 
-    async def _cleanup_process(self, process: asyncio.subprocess.Process, is_windows: bool) -> None:
+    async def _cleanup_process(
+        self, process: asyncio.subprocess.Process, is_windows: bool
+    ) -> None:
         """
         高可靠安全清理子进程及其整个进程树
         1. 彻底解决 ProcessLookupError 异常二次穿透导致的句柄泄漏
@@ -55,27 +61,37 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
             try:
                 # 1. Windows 端强杀：为辅助进程引入 2 秒绝对超时，防止 taskkill 自身挂起引发死锁
                 kill_proc = await asyncio.create_subprocess_exec(
-                    "taskkill", "/F", "/T", "/PID", str(pid),
+                    "taskkill",
+                    "/F",
+                    "/T",
+                    "/PID",
+                    str(pid),
                     stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL
+                    stderr=asyncio.subprocess.DEVNULL,
                 )
                 await asyncio.wait_for(kill_proc.wait(), timeout=2.0)
             except asyncio.TimeoutError:
-                logger.warning(f"⚠️ [进程清理] taskkill 强杀进程树超时(2s)，尝试直接降级强杀 PID: {pid}")
-                try: process.kill()
-                except Exception: pass
+                logger.warning(
+                    f"⚠️ [进程清理] taskkill 强杀进程树超时(2s)，尝试直接降级强杀 PID: {pid}"
+                )
+                try:
+                    process.kill()
+                except Exception:
+                    pass
             except Exception:
                 # 兜底捕获所有权限不足、命令找不到等异常，确保不穿透
-                try: process.kill()
-                except Exception: pass
+                try:
+                    process.kill()
+                except Exception:
+                    pass
         else:
             try:
                 # 2. Linux/Unix 端强杀：进程组两阶段强杀
                 pgid = os.getpgid(pid)
-                
+
                 # 第一阶段：温柔劝退
                 os.killpg(pgid, signal.SIGTERM)
-                
+
                 # 引入快速轮询，在 0.2 秒内只要子进程退出了就立即往下走，无需白白 sleep 满 0.2 秒
                 for _ in range(4):
                     if process.returncode is not None:
@@ -85,15 +101,19 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
                 # 第二阶段：死不悔改则强制抹杀
                 if process.returncode is None:
                     os.killpg(pgid, signal.SIGKILL)
-                    
+
             except ProcessLookupError:
                 # 运行到中途时，如果进程已经提前死掉，os.getpgid 或 killpg 会抛出此异常
                 logger.debug(f"ℹ️ [进程清理] 进程 {pid} 在清理前已提前退出")
             except Exception as e:
-                logger.error(f"❌ [进程清理] Linux 进程组清理期间发生未知异常: {str(e)}")
+                logger.error(
+                    f"❌ [进程清理] Linux 进程组清理期间发生未知异常: {str(e)}"
+                )
                 # 哪怕进程组报错，也要尝试单独强杀主 PID 兜底
-                try: process.kill()
-                except Exception: pass
+                try:
+                    process.kill()
+                except Exception:
+                    pass
 
         # ====================== 核心资源回收区 ======================
         # 无论前方哪个分支抛出什么奇葩异常，这里是终点站，必须通过 wait() 彻底收回底层文件句柄和 PID
@@ -101,7 +121,9 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
             # 给予最终的进程状态冲刷，防止 asyncio 内部留下死循环的僵尸状态句柄
             await asyncio.wait_for(process.wait(), timeout=3.0)
         except asyncio.TimeoutError:
-            logger.critical(f"🚨 [严重警告] 进程 {pid} 拒绝响应 wait() 回收，可能已变成系统僵尸进程！")
+            logger.critical(
+                f"🚨 [严重警告] 进程 {pid} 拒绝响应 wait() 回收，可能已变成系统僵尸进程！"
+            )
         except Exception:
             pass
 
@@ -121,19 +143,27 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
         try:
             # 2. 跨平台进程参数装配
             kwargs = self._build_process_kwargs()
-            
+
             if self.is_windows:
-                process = await asyncio.create_subprocess_exec("cmd.exe", "/c", args.command, **kwargs)
+                process = await asyncio.create_subprocess_exec(
+                    "cmd.exe", "/c", args.command, **kwargs
+                )
             else:
                 shell = "bash" if shutil.which("bash") else "sh"
-                process = await asyncio.create_subprocess_exec(shell, "-c", args.command, **kwargs)
+                process = await asyncio.create_subprocess_exec(
+                    shell, "-c", args.command, **kwargs
+                )
 
             # 3. 内存防爆：流式动态读取
-            stdout_bytes, stderr_bytes, is_truncated = await self._read_stream_safe(process, timeout)
+            stdout_bytes, stderr_bytes, is_truncated = await self._read_stream_safe(
+                process, timeout
+            )
             return_code = await process.wait()
 
             # 4. 后置处理、清洗与智能排错
-            return self._process_and_diagnose(args.command, stdout_bytes, stderr_bytes, return_code, is_truncated)
+            return self._process_and_diagnose(
+                args.command, stdout_bytes, stderr_bytes, return_code, is_truncated
+            )
 
         except asyncio.TimeoutError:
             await self._cleanup_process(process, self.is_windows)
@@ -148,33 +178,38 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
 
     def _audit_command(self, cmd: str) -> Tuple[bool, str]:
         """第一步：高危命令审计拦截"""
-        cmd_cleaned = re.sub(r'["\']', '', cmd.lower())
-        cmd_cleaned = re.sub(r'\s+', ' ', cmd_cleaned).strip()
-        
+        cmd_cleaned = re.sub(r'["\']', "", cmd.lower())
+        cmd_cleaned = re.sub(r"\s+", " ", cmd_cleaned).strip()
+
         dangerous_pattern = (
             r"\b(rm\s+-[a-z]*r[a-z]*\s+([/~\*]|\.\.))|"  # rm -rf /, rm -r *
             r"\b(mkfs|mkfs\.\w+|format\s+[a-zA-Z]:|dd\s+if=|dd\s+of=|reboot|shutdown|init\s+0)\b|"
-            r"(\s*>\s*([/\\]dev|[/\\]etc[/\\]|[/\\]system32))" # 恶意写保护区
+            r"(\s*>\s*([/\\]dev|[/\\]etc[/\\]|[/\\]system32))"  # 恶意写保护区
         )
         if re.search(dangerous_pattern, cmd_cleaned):
-            return False, "错误: 检测到高危系统删除、格式化或写保护区命令，已被系统安全层强制拦截。"
+            return (
+                False,
+                "错误: 检测到高危系统删除、格式化或写保护区命令，已被系统安全层强制拦截。",
+            )
         return True, ""
 
     def _build_process_kwargs(self) -> Dict[str, Any]:
         """第二步：跨平台非交互式环境变量与进程配置"""
         env_copy = os.environ.copy()
-        env_copy.update({
-            "DEBIAN_FRONTEND": "noninteractive",
-            "PAGER": "cat",
-            "PYTHONUNBUFFERED": "1"
-        })
+        env_copy.update(
+            {
+                "DEBIAN_FRONTEND": "noninteractive",
+                "PAGER": "cat",
+                "PYTHONUNBUFFERED": "1",
+            }
+        )
 
         kwargs = {
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.PIPE,
-            "env": env_copy
+            "env": env_copy,
         }
-        
+
         if self.is_windows:
             kwargs["creationflags"] = 0x08000000
         else:
@@ -184,7 +219,9 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
                 kwargs["preexec_fn"] = os.setsid
         return kwargs
 
-    async def _read_stream_safe(self, process: asyncio.subprocess.Process, timeout: float) -> Tuple[bytes, bytes, bool]:
+    async def _read_stream_safe(
+        self, process: asyncio.subprocess.Process, timeout: float
+    ) -> Tuple[bytes, bytes, bool]:
         """第三步：内存防爆流式读取（核心流控）"""
         stdout_chunks: List[bytes] = []
         stderr_chunks: List[bytes] = []
@@ -209,28 +246,49 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
         await asyncio.wait_for(
             asyncio.gather(
                 read_stream(process.stdout, stdout_chunks, "stdout_len"),
-                read_stream(process.stderr, stderr_chunks, "stderr_len")
+                read_stream(process.stderr, stderr_chunks, "stderr_len"),
             ),
-            timeout=timeout
+            timeout=timeout,
         )
-        
+
         return b"".join(stdout_chunks), b"".join(stderr_chunks), state["truncated"]
 
-    def _process_and_diagnose(self, cmd: str, stdout_bytes: bytes, stderr_bytes: bytes, return_code: int, is_truncated: bool) -> str:
+    def _process_and_diagnose(
+        self,
+        cmd: str,
+        stdout_bytes: bytes,
+        stderr_bytes: bytes,
+        return_code: int,
+        is_truncated: bool,
+    ) -> str:
         """第四步：文本清洗、反幻觉诊断与大模型语义拼接"""
-        
+
         def _decode(b: bytes) -> str:
-            if not b: return ""
-            encodings = list(dict.fromkeys(filter(None, [sys.getfilesystemencoding(), "utf-8", "gbk", "cp1252"])))
+            if not b:
+                return ""
+            encodings = list(
+                dict.fromkeys(
+                    filter(
+                        None, [sys.getfilesystemencoding(), "utf-8", "gbk", "cp1252"]
+                    )
+                )
+            )
             for enc in encodings:
-                try: return b.decode(enc).strip()
-                except UnicodeDecodeError: continue
+                try:
+                    return b.decode(enc).strip()
+                except UnicodeDecodeError:
+                    continue
             return b.decode(encodings[0], errors="replace").strip()
 
         def _clean_ansi(text: str) -> str:
-            if not text: return ""
-            ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[.*?[a-zA-Z])')
-            lines = [line.strip() for line in ansi_escape.sub('', text).splitlines() if line.strip()]
+            if not text:
+                return ""
+            ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[.*?[a-zA-Z])")
+            lines = [
+                line.strip()
+                for line in ansi_escape.sub("", text).splitlines()
+                if line.strip()
+            ]
             return "\n".join(lines).strip()
 
         out_str = _clean_ansi(_decode(stdout_bytes))
@@ -240,7 +298,9 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
         if err_str:
             if "command not found" in err_str and "python3" in cmd:
                 err_str += "\n\n【智能排错提示】: 沙箱中 Python 唤醒词是 'python'，请勿使用 'python3'。"
-            elif self.is_windows and any(x in err_str for x in ["not recognized", "找不到"]):
+            elif self.is_windows and any(
+                x in err_str for x in ["not recognized", "找不到"]
+            ):
                 bad_cmds = ["ls", "cat", "rm", "mkdir", "pwd"]
                 used_bad = [c for c in bad_cmds if re.search(rf"\b{c}\b", cmd.lower())]
                 if used_bad:
@@ -252,22 +312,32 @@ class RunCommandTool(BaseTool[RunCommandArgs]):
 
         # 最终组装
         result = []
-        if out_str: result.append(f"[标准输出]:\n{out_str}")
-        if err_str: result.append(f"[标准错误]:\n{err_str}")
-        if is_truncated: result.append("\n⚠️ [警告]: 输出内容过大，后端已启动流式截断，请勿盲目 cat 大文件。")
-        if return_code != 0: result.append(f"❌ [执行状态]: 命令执行失败，非零异常状态码: {return_code}")
-        
+        if out_str:
+            result.append(f"[标准输出]:\n{out_str}")
+        if err_str:
+            result.append(f"[标准错误]:\n{err_str}")
+        if is_truncated:
+            result.append(
+                "\n⚠️ [警告]: 输出内容过大，后端已启动流式截断，请勿盲目 cat 大文件。"
+            )
+        if return_code != 0:
+            result.append(f"❌ [执行状态]: 命令执行失败，非零异常状态码: {return_code}")
+
         return "\n".join(result) if result else "命令执行成功，无任何控制台输出。"
 
     async def _cleanup_process(self, process, is_windows):
         """辅助方法：强杀残留进程"""
-        if not process: return
+        if not process:
+            return
         try:
             if is_windows:
                 process.terminate()
             else:
                 import signal
+
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)
         except Exception:
-            try: process.kill()
-            except Exception: pass
+            try:
+                process.kill()
+            except Exception:
+                pass

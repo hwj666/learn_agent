@@ -6,15 +6,16 @@ from core.config import ProviderConfig
 # 流式回调函数类型定义（和你的 Agent 完全匹配）
 ChunkCallback = Callable[[str, str, str], Awaitable[None]]
 
+
 class BaseLLMClient(ABC):
     """LLM 客户端抽象基类（兼容 ReAct Agent + 流式输出）"""
-    
+
     def __init__(self, config: ProviderConfig | None):
         # 配置对齐上层，防止空值崩溃
         self.config = config
         self.api_key: str = config.api_key if config else ""
         self.base_url: Optional[str] = config.base_url if config else None
-        
+
         # 内部消息历史（可选）
         self.messages = []
 

@@ -7,7 +7,10 @@ from typing import Any, Optional, Set
 # 线程锁，确保多线程环境下模块加载安全
 _load_lock = threading.Lock()
 
-def _ensure_parent_modules(namespace_root: str, relative_parts: tuple, dir_path: Path) -> str:
+
+def _ensure_parent_modules(
+    namespace_root: str, relative_parts: tuple, dir_path: Path
+) -> str:
     """自顶向下安全构建虚拟包结构，确保整条包路径存在于 sys.modules"""
     current_ns = namespace_root
     current_path = dir_path
@@ -35,7 +38,9 @@ def _ensure_parent_modules(namespace_root: str, relative_parts: tuple, dir_path:
             if sub_init.exists():
                 spec = importlib.util.spec_from_file_location(current_ns, str(sub_init))
             else:
-                spec = importlib.util.spec_from_loader(current_ns, None, is_package=True)
+                spec = importlib.util.spec_from_loader(
+                    current_ns, None, is_package=True
+                )
 
             if spec:
                 sub_mod = importlib.util.module_from_spec(spec)
@@ -49,7 +54,10 @@ def _ensure_parent_modules(namespace_root: str, relative_parts: tuple, dir_path:
 
     return current_ns
 
-def _load_module_by_path(file_path: Path, module_name_key: str, parent_package: str, last_part: str) -> Optional[Any]:
+
+def _load_module_by_path(
+    file_path: Path, module_name_key: str, parent_package: str, last_part: str
+) -> Optional[Any]:
     """
     从文件路径加载模块。
     注意：在方案一中，由于使用了 @register_tool 装饰器，
@@ -86,6 +94,7 @@ def _load_module_by_path(file_path: Path, module_name_key: str, parent_package: 
             delattr(parent_mod, last_part)
         return None
 
+
 def _scan_and_load_package(dir_path: Path, namespace_root: str) -> None:
     """递归扫描目录并加载所有 .py 文件"""
     if not dir_path.exists() or not dir_path.is_dir():
@@ -104,17 +113,26 @@ def _scan_and_load_package(dir_path: Path, namespace_root: str) -> None:
             except Exception:
                 continue
 
-            if path.name == "__init__.py" or path.name.startswith("_") or path.name.startswith("."):
+            if (
+                path.name == "__init__.py"
+                or path.name.startswith("_")
+                or path.name.startswith(".")
+            ):
                 continue
 
             relative_parts = path.relative_to(dir_path).with_suffix("").parts
             module_name = f"{namespace_root}.{'.'.join(relative_parts)}"
 
             try:
-                parent_pkg = _ensure_parent_modules(namespace_root, relative_parts, dir_path)
-                _load_module_by_path(real_path, module_name, parent_pkg, relative_parts[-1])
+                parent_pkg = _ensure_parent_modules(
+                    namespace_root, relative_parts, dir_path
+                )
+                _load_module_by_path(
+                    real_path, module_name, parent_pkg, relative_parts[-1]
+                )
             except Exception as e:
                 print(f"[错误] 处理文件 {path} 失败 -> {e}")
+
 
 def discover_and_load_tools(user_tools_dir: Optional[str] = None) -> None:
     """一键自动加载所有工具（系统内置 + 用户自定义）"""

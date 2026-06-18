@@ -2,6 +2,7 @@ from dataclasses import dataclass, asdict
 from typing import Any, Optional, Tuple
 import sys
 
+
 @dataclass(slots=True)
 class ToolCall:
     id: str
@@ -12,16 +13,17 @@ class ToolCall:
 from pydantic import BaseModel
 from typing import Optional
 
+
 class ToolResult(BaseModel):
     success: bool
     content: str
-    exit_code: int = 0
     error: Optional[str] = None
 
 
 @dataclass(slots=True)
 class LLMMessage:
     """LLM 标准消息体（终极内存优化 + 流式安全版）"""
+
     role: str
     content: Optional[str] = None
     reasoning_content: Optional[str] = None
@@ -33,6 +35,7 @@ class LLMMessage:
         self.role = sys.intern(str(self.role))
 
     """业务层消息构造器（完全兼容旧代码）"""
+
     @classmethod
     def system(cls, content: str):
         return cls(role="system", content=content)
@@ -42,10 +45,11 @@ class LLMMessage:
         return cls(role="user", content=content)
 
     @classmethod
-    def assistant(cls,
+    def assistant(
+        cls,
         content: Optional[str] = None,
         reasoning: Optional[str] = None,
-        tool_calls: Optional[list | Tuple[ToolCall, ...]] = None
+        tool_calls: Optional[list | Tuple[ToolCall, ...]] = None,
     ):
         t_calls = tuple(tool_calls) if tool_calls is not None else None
 
@@ -53,16 +57,12 @@ class LLMMessage:
             role="assistant",
             content=content,
             reasoning_content=reasoning,
-            tool_calls=t_calls
+            tool_calls=t_calls,
         )
 
     @classmethod
     def tool(cls, id: str, content: str):
-        return cls(
-            role="tool",
-            tool_call_id=id,
-            content=content
-        )
+        return cls(role="tool", tool_call_id=id, content=content)
 
     def to_dict(self) -> dict[str, Any]:
         """转为 LLM API 标准字典（严格对齐 OpenAI）"""
@@ -72,7 +72,7 @@ class LLMMessage:
             return {
                 "role": "tool",
                 "tool_call_id": self.tool_call_id,
-                "content": self.content or ""
+                "content": self.content or "",
             }
 
         # 2. 助手调用工具
@@ -84,12 +84,10 @@ class LLMMessage:
                     {
                         "id": call.id,
                         "type": "function",
-                        "function": {
-                            "name": call.name,
-                            "arguments": call.arguments
-                        }
-                    } for call in self.tool_calls
-                ]
+                        "function": {"name": call.name, "arguments": call.arguments},
+                    }
+                    for call in self.tool_calls
+                ],
             }
             if self.reasoning_content is not None:
                 res["reasoning_content"] = self.reasoning_content
@@ -112,6 +110,7 @@ class LLMMessage:
 @dataclass(slots=True)
 class LLMResponse:
     """LLM 响应统一格式"""
+
     content: str
     reasoning_content: Optional[str] = None
     tool_calls: Optional[Tuple[ToolCall, ...]] = None

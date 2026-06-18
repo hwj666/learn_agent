@@ -5,7 +5,7 @@ agents:
         tool_set:
             - bash
             - todo
-            - file
+            - file_ops
 
 model_providers:
     npu:

@@ -3,23 +3,28 @@ import copy
 from typing import Any, Dict, Type, TypeVar, Generic, get_args
 from pydantic import BaseModel
 
+
 class BaseToolState(BaseModel):
     pass
+
 
 class EmptyState(BaseToolState):
     pass
 
+
 ArgsType = TypeVar("T", bound=BaseModel)
+
 
 class BaseTool(Generic[ArgsType], ABC):
     """
     LLM 函数调用工具 抽象基类
     配合参数化强约束装饰器使用，去除冗余的 self-name 补全
     """
+
     # 这些属性由 @ToolRegistry.register(name=..., toolset=...) 在类创建后强行注入
     name: str
     toolset: str
-    
+
     # 允许子类覆盖或保持默认
     description: str = ""
     args_schema: Type[ArgsType]
@@ -61,14 +66,16 @@ class BaseTool(Generic[ArgsType], ABC):
         """🔥 生成 OpenAI 100% 兼容的 Schema，支持嵌套模型展开"""
         # 注意：此处校验确保装饰器一定执行过并注入了有效的 name 与类自带的 description
         if not getattr(cls, "name", None) or not cls.description:
-            raise ValueError(f"工具 {cls.__name__} 必须配置有效的 name 且 description 不能为空")
+            raise ValueError(
+                f"工具 {cls.__name__} 必须配置有效的 name 且 description 不能为空"
+            )
 
         schema = {
             "type": "function",
             "function": {
                 "name": cls.name,
                 "description": cls.description,
-            }
+            },
         }
 
         if cls.args_schema and issubclass(cls.args_schema, BaseModel):
@@ -94,9 +101,6 @@ class BaseTool(Generic[ArgsType], ABC):
 
             schema["function"]["parameters"] = pydantic_schema
         else:
-            schema["function"]["parameters"] = {
-                "type": "object",
-                "properties": {}
-            }
+            schema["function"]["parameters"] = {"type": "object", "properties": {}}
 
         return schema

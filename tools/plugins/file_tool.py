@@ -20,7 +20,7 @@ class FileCreateArgs(BaseModel):
 
 
 @ToolRegistry.register(name="file_create", toolset="file_ops")
-class FileCreateTool(BaseTool):
+class FileCreateTool(BaseTool[FileCreateArgs]):
     description = (
         "【新建文件首选】在指定路径创建一个新文件并写入初始内容。\n"
         "【重要使用规范（小模型必读）】:\n"
@@ -97,7 +97,7 @@ class FileViewArgs(BaseModel):
 
 
 @ToolRegistry.register(name="file_view", toolset="file_ops")
-class FileViewTool(BaseTool):
+class FileViewTool(BaseTool[FileViewArgs]):
     description = (
         "【修改文件前必用】精确查看指定文件的行内容与行号。\n"
         "【小模型使用规范】:\n"
@@ -161,7 +161,7 @@ class SearchTextArgs(BaseModel):
 
 
 @ToolRegistry.register(name="file_search_text", toolset="file_ops")
-class FileSearchTextTool(BaseTool):
+class FileSearchTextTool(BaseTool[SearchTextArgs]):
     description = (
         "【全局/局部找代码】在项目或指定路径的文件里，搜索包含特定关键词的行号和核心上下文。\n"
         "【重要提示】: 本工具返回的结果会包含匹配行及后续两行的代码快照，如果信息足够，你可以直接根据行号进行 patch_file_range 修改，无需重复调用 file_view。"
@@ -316,10 +316,10 @@ class PatchFileRangeArgs(BaseModel):
 
 
 @ToolRegistry.register(name="patch_file_range", toolset="file_ops")
-class PatchFileRangeTool(BaseTool):
+class PatchFileRangeTool(BaseTool[PatchFileRangeArgs]):
     description = (
         "【修改文件唯一首选】基于行号区间和旧代码快照进行安全无损的文件修改。\n"
-        "【重要使用规范（小模型必读）】:\n"
+        "【重要使用规范】:\n"
         "1. 调用前必须先使用 file_view 查看目标文件的精确行号。\n"
         "2. old_content 的字数和行数要适中（建议 3-10 行），既能保证文件内唯一，又能防止你产生漏字幻觉。\n"
         "3. 严禁传入整个文件作为 old_content！请只截取需要修改的那一小段上下文。\n"
@@ -469,7 +469,7 @@ class ListDirTreeArgs(BaseModel):
 
 
 @ToolRegistry.register(name="list_dir_tree", toolset="file_ops")
-class ListDirTreeTool(BaseTool):
+class ListDirTreeTool(BaseTool[ListDirTreeArgs]):
     description = (
         "【项目全局导航】以可视化的树状图（Tree）形式列出指定目录下的文件夹和文件结构。\n"
         "【使用规范】: 当你不知道某个文件在哪个具体文件夹下、或者想了解项目的整体架构时，请优先使用本工具。单次展示深度受到严格限制，防止刷屏。"

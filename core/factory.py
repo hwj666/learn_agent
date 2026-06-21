@@ -52,3 +52,10 @@ class PolicyFactory:
 
 # 预注册内置策略
 PolicyFactory.register("react", ReactPolicy)
+
+# 注册 PlanPolicy（延迟导入避免循环依赖）
+try:
+    from agents.plan_policy import PlanPolicy
+    PolicyFactory.register("plan", PlanPolicy)
+except ImportError:
+    pass

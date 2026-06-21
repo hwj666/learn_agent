@@ -9,7 +9,7 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
-from utils.base_stream_handler import BaseStreamHandler
+from handlers.base import BaseStreamHandler
 
 
 class RichStreamHandler(BaseStreamHandler):
@@ -31,22 +31,22 @@ class RichStreamHandler(BaseStreamHandler):
 
         self.panel_styles = panel_styles or {
             "think": {
-                "active": {"border_style": "yellow", "title": "🧠 思考链 (Reasoning)"},
-                "done": {"border_style": "dim", "title": "🧠 思考链 (已结束)"},
+                "active": {"border_style": "yellow", "title": "[THINK] 思考链 (Reasoning)"},
+                "done": {"border_style": "dim", "title": "[THINK] 思考链 (已结束)"},
             },
             "tool": {
                 "active": {
                     "border_style": "magenta",
-                    "title": "🛠️ 工具调用参数 (Tool Calls)",
+                    "title": "[TOOL] 工具调用参数 (Tool Calls)",
                 },
-                "done": {"border_style": "dim", "title": "🛠️ 工具调用 (已就绪)"},
+                "done": {"border_style": "dim", "title": "[TOOL] 工具调用 (已就绪)"},
             },
             "respond": {
                 "active": {
                     "border_style": "green",
-                    "title": "🤖 模型回复 (Assistant Response)",
+                    "title": "[RESPOND] 模型回复 (Assistant Response)",
                 },
-                "done": {"border_style": "dim", "title": "🤖 模型回复 (完成)"},
+                "done": {"border_style": "dim", "title": "[RESPOND] 模型回复 (完成)"},
             },
         }
 
@@ -90,7 +90,7 @@ class RichStreamHandler(BaseStreamHandler):
             try:
                 self.live.update(self._build_renderable(), refresh=True)
             except Exception as e:
-                self.console.print(f"[red]❌ 最终渲染失败: {e}[/red]")
+                self.console.print(f"[red]X 最终渲染失败: {e}[/red]")
             finally:
                 self.live.stop()
                 self.live = None
@@ -100,7 +100,7 @@ class RichStreamHandler(BaseStreamHandler):
                         self.stats["total_renders"] / self.stats["total_updates"]
                     )
                     self.console.print(
-                        f"\n[dim]📊 渲染统计: "
+                        f"\n[dim]渲染统计: "
                         f"总更新 {self.stats['total_updates']} 次, "
                         f"平均渲染 {avg_render_time * 1000:.1f}ms, "
                         f"最慢 {self.stats['max_render_time'] * 1000:.1f}ms[/dim]"
@@ -258,7 +258,7 @@ class RichStreamHandler(BaseStreamHandler):
 
             # 4. 初始化占位
             if not thinking_text and not tool_text and not responding_text:
-                placeholder = Text("🤖 正在连接模型并初始化会话...", style="dim blink")
+                placeholder = Text("[SYSTEM] 正在连接模型并初始化会话...", style="dim")
                 parts.append(Panel(placeholder, border_style="blue"))
 
             # 5. 状态栏
@@ -277,10 +277,10 @@ class RichStreamHandler(BaseStreamHandler):
                 Panel(
                     f"[red]渲染错误: {str(e)}[/red]",
                     border_style="red",
-                    title="❌ 渲染异常",
+                    title="X 渲染异常",
                 )
             )
-            self.console.print(f"[red]❌ _build_renderable 错误: {e}[/red]")
+            self.console.print(f"[red]X _build_renderable 错误: {e}[/red]")
 
         return Group(*parts)
 
@@ -345,7 +345,7 @@ class RichStreamHandler(BaseStreamHandler):
                     try:
                         self.live.update(self._build_renderable(), refresh=True)
                     except Exception as e:
-                        self.console.print(f"[red]❌ 实时更新失败: {e}[/red]")
+                        self.console.print(f"[red]X 实时更新失败: {e}[/red]")
                         fallback = Panel(
                             f"[yellow]正在处理数据... (错误: {e})[/yellow]",
                             border_style="yellow",
@@ -360,7 +360,7 @@ class RichStreamHandler(BaseStreamHandler):
                     if render_time > 0.1:
                         self.stats["slow_renders"] += 1
                         self.console.log(
-                            f"⚠️ 渲染耗时 {render_time * 1000:.1f}ms (第 {self.stats['slow_renders']} 次慢渲染)"
+                            f"! 渲染耗时 {render_time * 1000:.1f}ms (第 {self.stats['slow_renders']} 次慢渲染)"
                         )
                     self.last_refresh_time = current_time
                 else:
@@ -375,9 +375,9 @@ class RichStreamHandler(BaseStreamHandler):
                 try:
                     self.live.update(
                         Panel(
-                            "[yellow]✋ 用户中断了流式输出[/yellow]",
+                            "[yellow]用户中断了流式输出[/yellow]",
                             border_style="yellow",
-                            title="⏹️ 流式输出已中断",
+                            title="流式输出已中断",
                         ),
                         refresh=True,
                     )
@@ -385,7 +385,7 @@ class RichStreamHandler(BaseStreamHandler):
                     pass
             raise
         except Exception as e:
-            self.console.print(f"\n[red]❌ __call__ 错误: {e}[/red]")
+            self.console.print(f"\n[red]X __call__ 错误: {e}[/red]")
             raise
 
     def get_stats(self) -> Dict:

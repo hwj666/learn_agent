@@ -24,14 +24,14 @@ class TaskCompletedTool(BaseTool[TaskCompletedArgs]):
     description = """
         任务完成声明工具。当所有子任务都已执行完毕，且目标已达成时调用此工具。
         调用此工具表示任务成功结束，请确保在调用前已完成所有必要的工作。
-        
+
         参数说明：
         - summary: 必填，简要总结已完成的工作
         - result: 可选，最终输出结果
     """
 
     async def execute(self, ctx: Dict[str, Any], args: TaskCompletedArgs) -> str:
-        return f"✅ 任务已完成\n\n总结：{args.summary}\n\n结果：{args.result if args.result else '无额外输出'}"
+        return f"[OK] 任务已完成\n\n总结：{args.summary}\n\n结果：{args.result if args.result else '无额外输出'}"
 
 
 class GetEnvInfoArgs(BaseModel):
@@ -63,4 +63,4 @@ class FinishTaskTool(BaseTool[FinishTaskArgs]):
     description = "结束当前任务，用于无法完成或需要用户介入的情况"
 
     async def execute(self, ctx: Dict[str, Any], args: FinishTaskArgs) -> str:
-        return f"⏹️ 任务已结束\n\n原因：{args.reason}"
+        return f"[STOP] 任务已结束\n\n原因：{args.reason}"

@@ -1,7 +1,11 @@
+"""
+工具调用提取模块
+从非结构化文本中提取工具调用
+"""
 import json
 import logging
 import re
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -169,5 +173,4 @@ def _infer_tool_name(call_data: Dict, tools: Optional[List[Dict]] = None) -> str
     return "unknown_tool"
 
 
-# 保持对原有函数的兼容性
 __all__ = ["extract_implicit_tool_calls"]

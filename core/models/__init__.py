@@ -1,8 +1,7 @@
 """
-core.message 兼容层
-实际数据模型已移至 core.models.message
+core.models 模块
+数据模型定义
 """
-# 重新导出 core.models.message 中的所有内容，保持向后兼容
 from core.models.message import (
     ToolCall,
     ToolResult,

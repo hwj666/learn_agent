@@ -25,12 +25,13 @@ class Agent:
         max_steps: int = 10,
         max_history_turns: int = 5,
         logger: Optional[logging.Logger] = None,
+        trace_enabled: bool = False,
     ):
         self.logger = logger or logging.getLogger(f"Agent[{session_id}]")
         self.session_id = session_id
         self.config = config
 
-        self.client = OpenAIClient(config.model_config)
+        self.client = OpenAIClient(config.model_config, trace_enabled=trace_enabled)
         self.storage = MemoryStorage()
         from tools.execute import ToolExecutor
         self.executor = ToolExecutor(self.storage, allowed_toolsets=config.tool_set)
@@ -74,3 +75,22 @@ def create_react_agent(config: AgentConfig, session_id: str, **kwargs) -> Agent:
         session_id=session_id,
         **kwargs
     )
+
+
+def setup_trace_logging(log_file: str = "trace.log", level: int = logging.DEBUG):
+    """配置 trace 日志输出到文件"""
+    trace_logger = logging.getLogger("trace")
+    trace_logger.setLevel(level)
+
+    # 清除已有的 handlers
+    trace_logger.handlers.clear()
+
+    # 添加文件 handler
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    )
+    trace_logger.addHandler(file_handler)
+
+    return trace_logger

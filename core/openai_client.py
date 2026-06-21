@@ -1,20 +1,27 @@
 import os
+import json
+import logging
+import time
+import asyncio
 from typing import AsyncGenerator, List, Optional, Tuple
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIError
 from core.message import LLMMessage, LLMResponse, ToolCall
 from core.base_client import BaseLLMClient
 from core.config import ModelConfig
-from utils.base_stream_handler import BaseStreamHandler
-from utils.extract_tool import extract_implicit_tool_calls
-from utils.print_stream_handler import PrintStreamHandler
-from utils.rich_stream_handler import RichStreamHandler
+from handlers.base import BaseStreamHandler
+from tools.extract import extract_implicit_tool_calls
+from handlers.print_handler import PrintStreamHandler
+from handlers.rich_handler import RichStreamHandler
 
 _ = load_dotenv()
 
+trace_logger = logging.getLogger("trace")
+trace_logger.setLevel(logging.DEBUG)
+
 
 class OpenAIClient(BaseLLMClient):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, trace_enabled: bool = False):
         super().__init__(config.provider)
         self.client = AsyncOpenAI(
             api_key=config.provider.api_key or os.getenv("OPENAI_API_KEY"),
@@ -24,6 +31,12 @@ class OpenAIClient(BaseLLMClient):
         self.top_p = config.top_p
         self.top_k = config.top_k if config.top_k is not None else 50
         self.temperature = config.temperature
+        self.trace_enabled = trace_enabled
+
+    def _log_trace(self, phase: str, data: any):
+        """记录 trace 日志"""
+        if self.trace_enabled:
+            trace_logger.debug(f"[{phase}] {json.dumps(data, ensure_ascii=False, indent=2)}")
 
     def _merge_tool_calls(self, cleaned_tool_deltas: list, buffer: dict):
         """安全合并并发工具流，确保 index 绝对对齐"""
@@ -70,22 +83,15 @@ class OpenAIClient(BaseLLMClient):
             extra_body=extra_body if extra_body else None,
         )
 
-    async def stream_chat(
+    async def _stream_chat_inner(
         self, messages: List[LLMMessage], tools: Optional[list] = None
     ) -> AsyncGenerator[Tuple[str, str, list, str], None]:
-        """【底层数据源】流式生成器：清洗数据，透传碎片段与工具增量字典"""
-        try:
-            response = await self._create_chat_completion_stream(messages, tools)
-        except Exception as e:
-            print(f"Stream connection failed: {str(e)}")
-            raise e
-
+        response = await self._create_chat_completion_stream(messages, tools)
         async for chunk in response:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
 
-            # 1. 思考链兼容性获取
             reasoning_delta = getattr(delta, "reasoning_content", None) or getattr(
                 delta, "reasoning", None
             )
@@ -93,16 +99,13 @@ class OpenAIClient(BaseLLMClient):
                 yield reasoning_delta, "", [], "thinking"
                 continue
 
-            # 2. 正常文本
             if delta.content:
                 yield "", delta.content, [], "responding"
                 continue
 
-            # 3. 工具调用安全清洗 (精准提取并发片段)
             if getattr(delta, "tool_calls", None):
                 valid_tool_calls = [tc for tc in delta.tool_calls if tc is not None]
                 cleaned_tool_deltas = []
-                # 🎯 如果有有效数据，正常解析
                 if valid_tool_calls:
                     for tc in valid_tool_calls:
                         idx = getattr(tc, "index", 0) or 0
@@ -119,6 +122,81 @@ class OpenAIClient(BaseLLMClient):
                         )
                 yield "", "", cleaned_tool_deltas, "tool_calling"
 
+    async def _fallback_non_streaming(
+        self, messages: List[LLMMessage], tools: Optional[list] = None
+    ) -> AsyncGenerator[Tuple[str, str, list, str], None]:
+        """非流式降级调用：当流式调用失败时使用"""
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[msg.to_dict() for msg in messages],
+            tools=tools or None,
+            stream=False,
+            temperature=self.temperature,
+            top_p=self.top_p,
+        )
+
+        if not response.choices:
+            return
+
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        tool_calls = getattr(choice.message, "tool_calls", [])
+
+        if content:
+            yield "", content, [], "responding"
+
+        if tool_calls:
+            cleaned_tool_deltas = []
+            for tc in tool_calls:
+                idx = getattr(tc, "index", 0) or 0
+                func = getattr(tc, "function", None)
+                args = getattr(func, "arguments", "") if func else ""
+                cleaned_tool_deltas.append(
+                    {
+                        "index": idx,
+                        "id": getattr(tc, "id", None),
+                        "name": getattr(func, "name", None),
+                        "arguments": args,
+                    }
+                )
+            yield "", "", cleaned_tool_deltas, "tool_calling"
+
+    async def stream_chat(
+        self, messages: List[LLMMessage], tools: Optional[list] = None
+    ) -> AsyncGenerator[Tuple[str, str, list, str], None]:
+        """【底层数据源】流式生成器：清洗数据，透传碎片段与工具增量字典"""
+        max_retries = 3
+        retry_delay = 2
+
+        for attempt in range(max_retries):
+            try:
+                async for item in self._stream_chat_inner(messages, tools):
+                    yield item
+                return
+            except APIError as e:
+                if "peg-native" in str(e).lower() and attempt < max_retries - 1:
+                    self._log_trace("RETRY", {
+                        "attempt": attempt + 1,
+                        "max_retries": max_retries,
+                        "error": str(e),
+                        "action": "retrying stream_chat"
+                    })
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    continue
+                elif "peg-native" in str(e).lower():
+                    self._log_trace("FALLBACK", {
+                        "error": str(e),
+                        "action": "falling back to non-streaming"
+                    })
+                    async for item in self._fallback_non_streaming(messages, tools):
+                        yield item
+                    return
+                else:
+                    raise e
+            except Exception as e:
+                self._log_trace("ERROR", {"error": str(e)})
+                raise e
+
     async def chat(
         self,
         messages: List[LLMMessage],
@@ -129,6 +207,14 @@ class OpenAIClient(BaseLLMClient):
         content = ""
         reasoning = ""
         tool_calls_buffer = {}
+
+        # Trace: 记录发送给模型的请求
+        request_data = {
+            "model": self.model,
+            "messages": [msg.to_dict() for msg in messages],
+            "tools": [t["function"]["name"] for t in tools] if tools else None,
+        }
+        self._log_trace("REQUEST", request_data)
 
         async with handler as print_handler:
             # 注意：第三个参数变为了 cleaned_tool_deltas 列表
@@ -165,6 +251,17 @@ class OpenAIClient(BaseLLMClient):
                 ToolCall(id=t["id"], name=t["name"], arguments=t["arguments"])
                 for t in tool_calls
             ]
+
+        # Trace: 记录模型的响应
+        response_data = {
+            "content": content[:2000] + "..." if len(content) > 2000 else content,
+            "reasoning_content": reasoning[:2000] + "..." if len(reasoning) > 2000 else reasoning,
+            "tool_calls": [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in final_tool_calls
+            ] if final_tool_calls else None,
+        }
+        self._log_trace("RESPONSE", response_data)
 
         return LLMResponse(
             content=content,

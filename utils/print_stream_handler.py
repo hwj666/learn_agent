@@ -26,14 +26,14 @@ class PrintStreamHandler:
         self.tool_names_buffer.clear()
 
         print(
-            f"{self.COLOR_SYSTEM}🤖 [系统] 正在连接大模型并建立流式通道...{self.COLOR_RESET}",
+            f"{self.COLOR_SYSTEM}[SYSTEM] 正在连接大模型并建立流式通道...{self.COLOR_RESET}",
             flush=True,
         )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         print(
-            f"\n\n{self.COLOR_SYSTEM}🏁 [系统] 模型流式传输结束。\n{self.COLOR_RESET}",
+            f"\n\n{self.COLOR_SYSTEM}[SYSTEM] 模型流式传输结束。\n{self.COLOR_RESET}",
             flush=True,
         )
         return False
@@ -54,17 +54,17 @@ class PrintStreamHandler:
         if chunk_type_lower != self.last_chunk_type:
             if "think" in chunk_type_lower or "reason" in chunk_type_lower:
                 print(
-                    f"\n\n{self.COLOR_GREY}{self.COLOR_DIM}{self.COLOR_BOLD}🧠 ============= [思考链开始] ============={self.COLOR_RESET}"
+                    f"\n\n{self.COLOR_GREY}{self.COLOR_DIM}{self.COLOR_BOLD}[THINK] ============= [思考链开始] ============={self.COLOR_RESET}"
                 )
                 self.last_chunk_type = "thinking"
             elif "respond" in chunk_type_lower or "content" in chunk_type_lower:
                 print(
-                    f"\n\n{self.COLOR_RESPOND}{self.COLOR_BOLD}🤖 ============= [模型正式回复] ============={self.COLOR_RESET}"
+                    f"\n\n{self.COLOR_RESPOND}{self.COLOR_BOLD}[RESPOND] ============= [模型正式回复] ============={self.COLOR_RESET}"
                 )
                 self.last_chunk_type = "responding"
             elif "tool" in chunk_type_lower:
                 print(
-                    f"\n\n{self.COLOR_TOOL}{self.COLOR_BOLD}🛠️ ============= [并发工具调用流] ============={self.COLOR_RESET}"
+                    f"\n\n{self.COLOR_TOOL}{self.COLOR_BOLD}[TOOL] ============= [并发工具调用流] ============={self.COLOR_RESET}"
                 )
                 self.last_chunk_type = "tool_calling"
 

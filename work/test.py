@@ -1,2 +1,4 @@
 def func(a, b):
-    return a + b1
+
+if __name__ == "__main__":
+    print(f"测试结果: func(3, 5) = {func(3, 5)}")

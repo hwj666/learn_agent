@@ -48,7 +48,7 @@ class ToolRegistry:
                         if is_same_file and is_same_classname:
                             cls._registry[name] = tool_cls
                             print(
-                                f"🔄 幂等更新工具：{name} (由于不同的导入路径重复加载)"
+                                f"[UPDATE] 幂等更新工具：{name} (由于不同的导入路径重复加载)"
                             )
                             return tool_cls
 
@@ -60,7 +60,7 @@ class ToolRegistry:
 
                 cls._registry[name] = tool_cls
 
-            print(f"✅ 注册工具：{name} (toolset={toolset})")
+            print(f"[OK] 注册工具：{name} (toolset={toolset})")
             return tool_cls
 
         return decorator

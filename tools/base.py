@@ -1,3 +1,6 @@
+"""
+工具基类
+"""
 from abc import ABC, abstractmethod
 import copy
 from typing import Any, Dict, Type, TypeVar, Generic, get_args
@@ -16,28 +19,18 @@ ArgsType = TypeVar("T", bound=BaseModel)
 
 
 class BaseTool(Generic[ArgsType], ABC):
-    """
-    LLM 函数调用工具 抽象基类
-    配合参数化强约束装饰器使用，去除冗余的 self-name 补全
-    """
-
-    # 这些属性由 @ToolRegistry.register(name=..., toolset=...) 在类创建后强行注入
     name: str
     toolset: str
-
-    # 允许子类覆盖或保持默认
     description: str = ""
     args_schema: Type[ArgsType]
     state_schema: Type[BaseToolState] = EmptyState
 
     def __init_subclass__(cls, **kwargs):
-        """专门负责做泛型提取，不越权处理 name 和 toolset"""
         super().__init_subclass__(**kwargs)
 
         if "args_schema" in cls.__dict__:
             return
 
-        # 核心：自动提取泛型 BaseTool[XXXArgs] 的参数模型
         for base in cls.__orig_bases__:
             type_args = get_args(base)
             if type_args and issubclass(type_args[0], BaseModel):
@@ -48,7 +41,6 @@ class BaseTool(Generic[ArgsType], ABC):
         self._initialized = True
 
     def __setattr__(self, name, value):
-        """🔒 无状态保护：防运行时污染"""
         if not hasattr(self, "_initialized"):
             super().__setattr__(name, value)
             return
@@ -63,8 +55,6 @@ class BaseTool(Generic[ArgsType], ABC):
 
     @classmethod
     def to_schema(cls) -> Dict[str, Any]:
-        """🔥 生成 OpenAI 100% 兼容的 Schema，支持嵌套模型展开"""
-        # 注意：此处校验确保装饰器一定执行过并注入了有效的 name 与类自带的 description
         if not getattr(cls, "name", None) or not cls.description:
             raise ValueError(
                 f"工具 {cls.__name__} 必须配置有效的 name 且 description 不能为空"

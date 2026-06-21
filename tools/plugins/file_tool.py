@@ -476,41 +476,38 @@ class ListDirTreeTool(BaseTool[ListDirTreeArgs]):
     )
     toolset = "file_ops"
 
-    def __init__(self):
-        super().__init__()
-        # 定义高频过滤的垃圾目录和无关文件
-        self.EXCLUDE_DIRS = {
-            ".git",
-            "__pycache__",
-            "node_modules",
-            ".venv",
-            "env",
-            "venv",
-            "dist",
-            "build",
-            ".idea",
-            ".vscode",
-            ".pytest_cache",
-            ".next",
-            ".nuxt",
-        }
-        self.EXCLUDE_EXTS = (
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".ico",
-            ".pyc",
-            ".pdf",
-            ".zip",
-            ".tar.gz",
-            ".tar",
-            ".gz",
-            ".exe",
-            ".dll",
-            ".so",
-            ".lock",
-        )
+    EXCLUDE_DIRS = {
+        ".git",
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "env",
+        "venv",
+        "dist",
+        "build",
+        ".idea",
+        ".vscode",
+        ".pytest_cache",
+        ".next",
+        ".nuxt",
+    }
+    EXCLUDE_EXTS = (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
+        ".pyc",
+        ".pdf",
+        ".zip",
+        ".tar.gz",
+        ".tar",
+        ".gz",
+        ".exe",
+        ".dll",
+        ".so",
+        ".lock",
+    )
 
     async def execute(self, ctx: Dict[str, Any], args: ListDirTreeArgs) -> str:
         try:

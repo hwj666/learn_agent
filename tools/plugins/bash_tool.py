@@ -9,7 +9,6 @@ import re
 from typing import Dict, Any, List, Tuple
 from pydantic import BaseModel, Field
 
-# 假设这是你的基础类
 from tools.base import BaseTool
 from tools.registry import ToolRegistry
 

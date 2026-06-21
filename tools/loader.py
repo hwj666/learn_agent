@@ -137,10 +137,14 @@ def _scan_and_load_package(dir_path: Path, namespace_root: str) -> None:
 def discover_and_load_tools(user_tools_dir: Optional[str] = None) -> None:
     """一键自动加载所有工具（系统内置 + 用户自定义）"""
     current_file_dir = Path(__file__).resolve().parent
-    system_plugins_dir = current_file_dir / "plugins"
 
-    print(f"[信息] 加载系统插件: {system_plugins_dir}")
-    _scan_and_load_package(system_plugins_dir, namespace_root="tools.plugins")
+    print(f"[信息] 加载工具目录: {current_file_dir}")
+    _scan_and_load_package(current_file_dir, namespace_root="tools")
+
+    system_plugins_dir = current_file_dir / "plugins"
+    if system_plugins_dir.exists():
+        print(f"[信息] 加载插件目录: {system_plugins_dir}")
+        _scan_and_load_package(system_plugins_dir, namespace_root="tools.plugins")
 
     if user_tools_dir:
         user_path = Path(user_tools_dir).resolve()

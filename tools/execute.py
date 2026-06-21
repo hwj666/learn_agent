@@ -3,15 +3,17 @@ import inspect
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from contextlib import asynccontextmanager
 
 from pydantic import ValidationError
-from core.message import LLMMessage, ToolCall, ToolResult
 from tools.base import EmptyState
 from tools.registry import ToolRegistry
 from tools.storage import BaseStorage
 from utils.trace import get_trace_id
+
+if TYPE_CHECKING:
+    from core.message import LLMMessage, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +117,10 @@ class ToolExecutor:
             )
 
     async def execute(
-        self, tool_calls: List[ToolCall], ctx: Dict[str, Any], timeout: float = 1000
-    ) -> List[LLMMessage]:
+        self, tool_calls: List["ToolCall"], ctx: Dict[str, Any], timeout: float = 1000
+    ) -> List["LLMMessage"]:
+        from core.message import LLMMessage, ToolCall, ToolResult
+
         if not tool_calls:
             return []
 
@@ -167,8 +171,10 @@ class ToolExecutor:
         return final_messages
 
     async def _execute_single(
-        self, tool_call: ToolCall, ctx: Dict[str, Any], timeout: float
-    ) -> ToolResult:
+        self, tool_call: "ToolCall", ctx: Dict[str, Any], timeout: float
+    ) -> "ToolResult":
+        from core.message import ToolResult
+
         # 从新版全局注册表中精准提取类模板
         tool_cls = ToolRegistry.get_tool(tool_call.name)
         if not tool_cls or tool_cls.toolset not in self.allowed_toolsets:

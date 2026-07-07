@@ -2,6 +2,7 @@
 系统工具
 包含任务完成、环境信息等系统级工具
 """
+
 from typing import Any, Dict
 from pydantic import BaseModel, Field
 
@@ -10,13 +11,8 @@ from tools.registry import ToolRegistry
 
 
 class TaskCompletedArgs(BaseModel):
-    summary: str = Field(
-        description="任务完成总结，简要描述已完成的工作内容"
-    )
-    result: str = Field(
-        default="",
-        description="可选的最终结果或输出内容"
-    )
+    summary: str = Field(description="任务完成总结，简要描述已完成的工作内容")
+    result: str = Field(default="", description="可选的最终结果或输出内容")
 
 
 @ToolRegistry.register(name="task_completed", toolset="system")
@@ -53,9 +49,7 @@ class GetEnvInfoTool(BaseTool[GetEnvInfoArgs]):
 
 
 class FinishTaskArgs(BaseModel):
-    reason: str = Field(
-        description="结束原因"
-    )
+    reason: str = Field(description="结束原因")
 
 
 @ToolRegistry.register(name="finish_task", toolset="system")

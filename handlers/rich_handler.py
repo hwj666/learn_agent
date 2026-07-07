@@ -31,7 +31,10 @@ class RichStreamHandler(BaseStreamHandler):
 
         self.panel_styles = panel_styles or {
             "think": {
-                "active": {"border_style": "yellow", "title": "[THINK] 思考链 (Reasoning)"},
+                "active": {
+                    "border_style": "yellow",
+                    "title": "[THINK] 思考链 (Reasoning)",
+                },
                 "done": {"border_style": "dim", "title": "[THINK] 思考链 (已结束)"},
             },
             "tool": {

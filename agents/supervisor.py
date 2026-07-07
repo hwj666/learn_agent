@@ -2,11 +2,12 @@
 监督者 Agent
 负责协调多个子 Agent，分配任务，汇总结果
 """
+
 import logging
 import json
 from typing import Dict, List, Any, Optional, TYPE_CHECKING
 
-from core.message import LLMMessage
+from schema.message import LLMMessage
 
 if TYPE_CHECKING:
     from agents.group import MultiAgentGroup, AgentMember
@@ -104,7 +105,9 @@ class SupervisorAgent:
         try:
             response = await self.client.chat(messages=messages)
             result = json.loads(response.content or "{}")
-            self.logger.info(f"决策结果: {json.dumps(result, ensure_ascii=False)[:200]}...")
+            self.logger.info(
+                f"决策结果: {json.dumps(result, ensure_ascii=False)[:200]}..."
+            )
             return result
         except Exception as e:
             self.logger.error(f"决策失败: {e}")
@@ -177,6 +180,7 @@ class SupervisorAgent:
         elif task_type == "parallel" and subtasks:
             # 并行执行
             import asyncio
+
             coros = [
                 self.execute_subtask(
                     agent_name=task["agent_name"],
@@ -209,18 +213,20 @@ class SupervisorAgent:
         context: Dict[str, Any],
     ) -> str:
         """汇总子任务结果"""
-        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
+        success_count = sum(
+            1 for r in results if isinstance(r, dict) and r.get("success")
+        )
         total_count = len(results)
 
         summaries = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                summaries.append(f"任务 {i+1}: 失败 ({result})")
+                summaries.append(f"任务 {i + 1}: 失败 ({result})")
             elif isinstance(result, dict):
                 if result.get("success"):
-                    summaries.append(f"任务 {i+1}: 成功")
+                    summaries.append(f"任务 {i + 1}: 成功")
                 else:
-                    summaries.append(f"任务 {i+1}: 失败 ({result.get('error')})")
+                    summaries.append(f"任务 {i + 1}: 失败 ({result.get('error')})")
 
         summary = f"完成 {success_count}/{total_count} 个子任务\n"
         summary += "\n".join(summaries)

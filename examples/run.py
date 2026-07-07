@@ -1,11 +1,12 @@
 """
 运行示例
 """
+
 import asyncio
 import sys
 
 from tools.loader import discover_and_load_tools
-from core.config import AppConfig
+from schema.config import AppConfig
 from core.agent import create_react_agent
 
 

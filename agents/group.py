@@ -2,6 +2,7 @@
 多 Agent 管理器
 管理多个 Agent 的生命周期、消息传递和任务分配
 """
+
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
@@ -12,15 +13,17 @@ logger = logging.getLogger("MultiAgentGroup")
 
 class AgentRole(Enum):
     """Agent 角色"""
-    SUPERVISOR = "supervisor"      # 监督者，负责分配任务
-    PLANNER = "planner"            # 规划者，负责制定计划
-    WORKER = "worker"              # 执行者，负责具体任务
-    CRITIC = "critic"              # 批评者，负责评估和反思
+
+    SUPERVISOR = "supervisor"  # 监督者，负责分配任务
+    PLANNER = "planner"  # 规划者，负责制定计划
+    WORKER = "worker"  # 执行者，负责具体任务
+    CRITIC = "critic"  # 批评者，负责评估和反思
 
 
 @dataclass
 class AgentMember:
     """Agent 成员"""
+
     name: str
     agent: Any  # Agent 实例
     role: AgentRole = AgentRole.WORKER
@@ -40,6 +43,7 @@ class AgentMember:
 
 class Message:
     """Agent 间消息"""
+
     def __init__(
         self,
         sender: str,
@@ -106,7 +110,9 @@ class MultiAgentGroup:
         available = [w for w in workers if not w.is_busy]
         return available[0] if available else None
 
-    def select_best_worker(self, required_capabilities: List[str]) -> Optional[AgentMember]:
+    def select_best_worker(
+        self, required_capabilities: List[str]
+    ) -> Optional[AgentMember]:
         """选择最适合的 Worker（基于能力匹配）"""
         workers = self.get_members_by_role(AgentRole.WORKER)
         available = [w for w in workers if not w.is_busy]
@@ -135,12 +141,16 @@ class MultiAgentGroup:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Message:
         """发送消息"""
-        msg = Message(sender=sender, receiver=receiver, content=content, metadata=metadata)
+        msg = Message(
+            sender=sender, receiver=receiver, content=content, metadata=metadata
+        )
         self.messages.append(msg)
         self.logger.debug(f"[{self.name}] 消息: {sender} -> {receiver}")
         return msg
 
-    def broadcast(self, sender: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> List[Message]:
+    def broadcast(
+        self, sender: str, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Message]:
         """广播消息给所有成员"""
         msgs = []
         for name in self.members:

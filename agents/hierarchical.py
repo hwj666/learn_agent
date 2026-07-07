@@ -4,20 +4,22 @@
 
 注意：核心编排逻辑（Orchestrator）在 core/orchestrator.py
 """
+
 import logging
 from typing import Dict, List, Any, Optional
 from enum import Enum
 
-from core.context import StepStatus
+from schema.context import StepStatus
 
 logger = logging.getLogger("HierarchicalOrchestrator")
 
 
 class OrchestrationMode(Enum):
     """编排模式"""
-    SEQUENTIAL = "sequential"      # 顺序执行
-    PARALLEL = "parallel"          # 并行执行
-    SUPERVISED = "supervised"     # 监督者模式
+
+    SEQUENTIAL = "sequential"  # 顺序执行
+    PARALLEL = "parallel"  # 并行执行
+    SUPERVISED = "supervised"  # 监督者模式
     HIERARCHICAL = "hierarchical"  # 层级编排
 
 
@@ -168,12 +170,15 @@ class HierarchicalOrchestrator:
                 if self.mode == OrchestrationMode.SEQUENTIAL:
                     results = []
                     for sub_task in node.sub_tasks:
-                        result = await self.execute_node(sub_task, agent_registry, depth + 1)
+                        result = await self.execute_node(
+                            sub_task, agent_registry, depth + 1
+                        )
                         results.append(result)
                     node.result = "\n".join(results)
 
                 elif self.mode == OrchestrationMode.PARALLEL:
                     import asyncio
+
                     coros = [
                         self.execute_node(sub_task, agent_registry, depth + 1)
                         for sub_task in node.sub_tasks
@@ -203,12 +208,14 @@ class HierarchicalOrchestrator:
         result: Optional[str] = None,
     ) -> None:
         """记录执行日志"""
-        self.execution_log.append({
-            "task_id": task_id,
-            "status": status,
-            "depth": depth,
-            "result": result,
-        })
+        self.execution_log.append(
+            {
+                "task_id": task_id,
+                "status": status,
+                "depth": depth,
+                "result": result,
+            }
+        )
 
     async def run(
         self,

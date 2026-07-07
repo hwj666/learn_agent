@@ -4,11 +4,12 @@
 
 注意：核心类型（Plan, PlanTask, PlanGenerator 等）定义在 core/plan.py
 """
+
 import json
 import logging
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
-from core.message import LLMMessage
+from schema.message import LLMMessage
 from core.policy import ExecutionPolicy
 from core.plan import Plan, PlanTask, PlanStatus, TaskStatus, SimplePlanGenerator
 
@@ -73,7 +74,9 @@ class PlanPolicy(ExecutionPolicy):
         lines = [f"目标: {plan.query}", ""]
         lines.append("执行计划：")
         for i, task in enumerate(plan.tasks, 1):
-            tool_info = f" → {task.tool_name}({task.arguments})" if task.tool_name else ""
+            tool_info = (
+                f" → {task.tool_name}({task.arguments})" if task.tool_name else ""
+            )
             lines.append(f"  {i}. {task.description}{tool_info}")
         return "\n".join(lines)
 
@@ -88,7 +91,9 @@ class PlanPolicy(ExecutionPolicy):
             generator = SimplePlanGenerator(client=self.client)
             self.current_plan = await generator.generate(query, history)
             self.current_step_index = 0
-            self.logger.info(f"[PlanPolicy] 生成计划，包含 {len(self.current_plan.tasks)} 个步骤")
+            self.logger.info(
+                f"[PlanPolicy] 生成计划，包含 {len(self.current_plan.tasks)} 个步骤"
+            )
 
         # 阶段 2: 执行当前步骤
         if self.current_step_index >= len(self.current_plan.tasks):
@@ -128,7 +133,9 @@ class PlanPolicy(ExecutionPolicy):
 
         if decision.tool_calls:
             called_tool = decision.tool_calls[0].name
-            self.logger.info(f"[PlanPolicy] 已执行步骤 {self.current_step_index + 1}: {called_tool}")
+            self.logger.info(
+                f"[PlanPolicy] 已执行步骤 {self.current_step_index + 1}: {called_tool}"
+            )
 
             if called_tool == self.FINISH_TOOL_NAME:
                 self.current_step_index = len(self.current_plan.tasks)
@@ -143,8 +150,9 @@ class PlanPolicy(ExecutionPolicy):
     def should_stop(self, decision: Any, execution_result: List[LLMMessage]) -> bool:
         """判断是否应该停止"""
         if not decision:
-            return self.current_plan is not None and \
-                   self.current_step_index >= len(self.current_plan.tasks)
+            return self.current_plan is not None and self.current_step_index >= len(
+                self.current_plan.tasks
+            )
 
         if not decision.tool_calls:
             return False
@@ -185,5 +193,6 @@ class PlanPolicy(ExecutionPolicy):
             "total_steps": len(tasks),
             "current_step": self.current_step_index + 1,
             "current_step_description": tasks[self.current_step_index].description
-                if tasks and self.current_step_index < len(tasks) else None,
+            if tasks and self.current_step_index < len(tasks)
+            else None,
         }

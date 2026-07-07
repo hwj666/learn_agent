@@ -71,7 +71,6 @@ class ToolExecutor:
         if not tool_calls:
             return []
 
-        # 🌟 降维打击：无状态下直接全量并行下发，共享基础上下文，但互不污染
         tasks = [
             self._execute_single(tool_call, ctx, timeout) for tool_call in tool_calls
         ]
@@ -80,22 +79,39 @@ class ToolExecutor:
         final_messages = []
         for i, res in enumerate(results):
             tool_call = tool_calls[i]
+
+            # 1. 统一封装为 ToolResult 容器
             if isinstance(res, Exception):
+                # 捕获 asyncio.gather 级别或线程池本身抛出的极罕见异常
                 tool_result = ToolResult(
-                    success=False, content=f"调度异常: {str(res)}", error=str(res)
+                    success=False,
+                    content="系统异常，请稍后再试。",
+                    error=f"Task Interrupted: {str(res)}",
                 )
             elif isinstance(res, ToolResult):
                 tool_result = res
             else:
                 tool_result = ToolResult(
-                    success=False, content="错误：非标的响应协议。"
+                    success=False,
+                    content="系统调度错误。",
+                    error="Non-standard protocol response",
                 )
+
+            # 2. 💰 释放 ToolResult 的工程价值：统一监控与埋点
+            if not tool_result.success:
+                # 在后端使用真正的错误日志（error 字段），报警系统（如 Sentry）会在这里拦截
+                print(
+                    f"[ERROR][Trace:{ctx.get('trace_id')}] 工具 `{tool_call.name}` 执行失败. 详情: {tool_result.error}"
+                )
+            else:
+                # 可以做成功率统计或耗时统计
+                pass
+
+            # 3. 🛡️ 完美解耦：只把安全的、纯净的 content 交付给 Agent
             final_messages.append(
                 LLMMessage.tool(
                     tool_call.id,
-                    content=json.dumps(
-                        tool_result.model_dump(exclude_none=True), ensure_ascii=False
-                    ),
+                    content=tool_result.content,  # 👈 大模型只看这个，不再需要 json.dumps
                 )
             )
         return final_messages
@@ -103,22 +119,27 @@ class ToolExecutor:
     async def _execute_single(
         self, tool_call: ToolCall, ctx: Dict[str, Any], timeout: float
     ) -> ToolResult:
+        print(tool_call.name)
         tool_cls = ToolRegistry.get_tool(tool_call.name)
         if not tool_cls or tool_cls.toolset not in self.allowed_toolsets:
+            # 权限拒绝属于工程错误，但需要清晰告诉 Agent 别再试了
             return ToolResult(
-                success=False, content=f"❌ 权限拒绝：未获准使用工具 `{tool_call.name}`"
+                success=False,
+                content=f"❌ 权限拒绝：当前策略未获准使用工具 `{tool_call.name}`。",
+                error="PermissionDenied",
             )
 
         try:
             arguments_dict = self._parse_arguments(tool_call.arguments)
-        except Exception:
+        except Exception as e:
+            # 参数解析失败，告诉 Agent 它生成的 JSON 格式不对，让它修正后重试
             return ToolResult(
-                success=False, content="参数 JSON 解析失败", error="JSONDecodeError"
+                success=False,
+                content="参数解析失败，请检查你生成的工具入参 JSON 格式是否正确。",
+                error=f"JSONDecodeError: {str(e)}",
             )
 
-        # 建立不可变的影子副本，注入隔离的 Trace 凭证，不破坏外层上下文
         shadow_ctx = ctx.copy()
-        shadow_ctx["trace_id"] = "trace_id_12345678"
 
         async with self._semaphore:
             try:
@@ -127,23 +148,31 @@ class ToolExecutor:
                     arguments_dict
                 )
 
-                # 🌟 纯净的无锁化多路复用执行
                 res_content = await self._execute_core_with_timeout(
                     tool_instance, shadow_ctx, validated_args, timeout
                 )
+
+                # 成功场景：真正在这里展现 ToolResult 结构体的规范价值
                 return ToolResult(success=True, content=str(res_content))
 
             except ValidationError as ve:
+                # 字段校验失败（如少传了必填参数），content 提示 Agent 缺了什么，以便 Agent 自行修复
                 return ToolResult(
                     success=False,
-                    content=f"契约校验失败: {str(ve)}",
+                    content=f"工具调用契约校验失败，可能缺少必填字段或类型错误: {str(ve.errors())}",
                     error="ValidationError",
                 )
             except asyncio.TimeoutError:
+                # 超时错误
                 return ToolResult(
-                    success=False, content="网络执行超时", error="TimeoutError"
+                    success=False,
+                    content="该工具响应超时，请稍后重试或尝试调用其他工具。",
+                    error="TimeoutError",
                 )
             except Exception as e:
+                # ⚠️ 关键安全保护：防止内部崩溃日志（如 SQL 报错、IP 暴露）污染大模型上下文
                 return ToolResult(
-                    success=False, content=f"内部崩溃: {str(e)}", error=type(e).__name__
+                    success=False,
+                    content="工具内部执行遇到未预期错误，暂时无法获取结果。",  # 面向 Agent：安全无害
+                    error=f"InternalCrash: {type(e).__name__} - {str(e)}",  # 面向后端：精准排查
                 )

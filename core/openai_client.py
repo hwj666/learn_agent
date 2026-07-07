@@ -69,7 +69,6 @@ class OpenAIClient(BaseLLMClient):
             # 防御性规避：部分推理模型（如原生 DeepSeek R1 官方版）在 API 层面不支持传 tools 显式 Function Calling
             if "r1" in model_lower:
                 actual_tools = None
-
         return await self.client.chat.completions.create(
             model=self.model,
             messages=[msg.to_dict() for msg in messages],
@@ -134,14 +133,11 @@ class OpenAIClient(BaseLLMClient):
         """【高层统一业务接口】消灭各种异形条件判断，实现函数式单入口派发与异常强安全隔离"""
         # 如果未指定处理器，则提供一个不进行任何操作的空壳 Handler 维持核心代码流畅度
         if handler is None:
-            from handlers.base import BaseStreamHandler
-
             handler = PrintStreamHandler()
 
         content = ""
         reasoning = ""
         tool_calls_buffer = {}
-        print("hwj")
         # 🎯 异步上下文管理器切入：网络异常、Task 被取消或崩溃都能 100% 捕获并重置 UI/终端 状态
         async with handler:
             async for r_delta, c_delta, t_deltas, stage in self.stream_chat(

@@ -1,41 +1,41 @@
+from dataclasses import asdict
 import json
 import hashlib
 import logging
 from typing import List
-from openai import AsyncOpenAI  # 或其他 LLM 客户端
+from core.openai_client import OpenAIClient
 
 from schema.context import ExecutionContext
 from schema.message import LLMMessage, LLMResponse, ToolCall
 from schema.node import NodeRecord
 from schema.enums import NodeStatus
+from tools.execute import ToolExecutor
 
 
 class ReActExecution:
     """微观 ReAct 物理探针"""
 
-    def __init__(self, openai_client: AsyncOpenAI, tool_executor, max_turns: int = 6):
-        self.client = openai_client  # 现在明确要求 AsyncOpenAI 类型
+    def __init__(
+        self,
+        openai_client: OpenAIClient,
+        tool_executor: ToolExecutor,
+        max_turns: int = 6,
+    ):
+        self.client = openai_client
         self.tool_executor = tool_executor
         self.max_turns = max_turns
         self.logger = logging.getLogger("ReActExecutor")
-        self.model = "gpt-4o-mini"  # 或从配置读取
+        self.model = "gpt-4o-mini"
 
     async def _call_llm(
         self, messages: List[LLMMessage], ctx: ExecutionContext
     ) -> LLMResponse:
-        """
-        严格使用你提供的 client.chat 接口：
-        - messages: List[LLMMessage]
-        - tools: List[dict]
-        - tool_choice: "auto"
-        """
         try:
-            # ✅ 不做任何格式转换，直接透传
+            # ✅ 透传消息与工具 Schema
             llm_response: LLMResponse = await self.client.chat(
                 messages=messages, tools=self.tool_executor.tools
             )
 
-            # ✅ 假设 LLMResponse 已经由 client 正确构造
             if llm_response.usage:
                 ctx.add_token_cost(
                     llm_response.usage.get("prompt_tokens", 0),
@@ -63,8 +63,8 @@ class ReActExecution:
         """执行 ReAct 循环"""
 
         system_prompt = (
-            "你是一个勤奋的体力工作者,用注册的工具完成当前任务"
-            "当你收集到足够的信息时，在回复中提供详细的最终答案。"
+            "你是一个勤奋的体力工作者,用注册的工具完成当前任务。\n"
+            "当你收集到足够的信息时，在回复中提供详细的最终答案。\n"
             "信息够了之后不要再使用工具。始终用用户提问的语言回答。 "
         )
 
@@ -79,10 +79,8 @@ class ReActExecution:
         current_turn_node = None
 
         for turn in range(1, self.max_turns + 1):
-            # 前置检查
             ctx.check_expiration()
 
-            # 创建 Turn 节点
             current_turn_node = NodeRecord(
                 node_id=f"{ctx.execution_id}_Turn_{turn}",
                 node_type="ReAct_Micro_Turn",
@@ -97,17 +95,14 @@ class ReActExecution:
             ctx.push_node(current_turn_node)
 
             try:
-                # 调用 LLM（现在使用真实的调用）
                 llm_response: LLMResponse = await self._call_llm(messages, ctx)
 
-                # 记录输出
                 current_turn_node.output_data = {
                     "content": llm_response.content,
                     "reasoning": llm_response.reasoning_content,
                     "has_tool_calls": bool(llm_response.tool_calls),
                 }
 
-                # 添加助手消息到历史
                 messages.append(
                     LLMMessage.assistant(
                         llm_response.content,
@@ -116,7 +111,6 @@ class ReActExecution:
                     )
                 )
 
-                # 检查是否完工（无工具调用 = 完成）
                 if not llm_response.tool_calls:
                     if llm_response.content and llm_response.content.strip():
                         current_turn_node.mark_success()
@@ -124,7 +118,6 @@ class ReActExecution:
                         self.logger.info(f"Task completed at turn {turn}")
                         return llm_response.content.strip()
                     else:
-                        # 空应答，提示重试
                         messages.append(
                             LLMMessage.user(
                                 "Please provide your final answer in the response text. "
@@ -136,26 +129,35 @@ class ReActExecution:
                         ctx.pop_node()
                         continue
 
-                # 反死循环检查
                 current_turn_node.tool_calls = llm_response.tool_calls
                 fp = self._get_fingerprint(llm_response.tool_calls)
 
+                # 🛡️ 体验优化：发现死循环时不直接挂断，喂给大模型一条警告，逼它自愈
                 if ctx.has_fingerprint(fp):
-                    raise RuntimeError(f"Loop detected! Fingerprint: {fp[:8]}")
+                    self.logger.warning(
+                        f"Loop detected! Fingerprint: {fp[:8]}. Warning LLM."
+                    )
+                    messages.append(
+                        LLMMessage.user(
+                            "【系统警告】检测到你正在用完全相同的参数重复调用工具，系统已拦截该行为。\n"
+                            "请仔细检查你是否陷入了逻辑死循环。如果是工具结果不符合预期，请更换参数、换用其他工具，或直接基于现有信息给出最终回答。"
+                        )
+                    )
+                    current_turn_node.status = NodeStatus.SUCCESS
+                    ctx.pop_node()
+                    continue
 
                 ctx.add_fingerprint(fp)
 
                 # 执行工具
                 tool_results = await self._execute_tools(llm_response.tool_calls, ctx)
 
+                # 🛠️ 修复点 1：使用模型统一的序列化方法 model_dump() 代替非标的 to_dict()
                 current_turn_node.tool_results = [r.to_dict() for r in tool_results]
                 current_turn_node.mark_success()
                 ctx.pop_node()
 
-                # 添加工具结果到消息历史
                 messages.extend(tool_results)
-
-                # 工具执行后再次检查超时（防止长时间工具调用）
                 ctx.check_expiration()
 
             except Exception as e:
@@ -165,14 +167,12 @@ class ReActExecution:
                 self.logger.error(f"Turn {turn} failed: {e}", exc_info=True)
                 raise
 
-        # 达到最大轮次
         error_msg = f"Max turns ({self.max_turns}) exceeded without completion"
         if current_turn_node:
             current_turn_node.mark_failure(error_msg)
         raise RuntimeError(error_msg)
 
     def _get_fingerprint(self, tool_calls: List[ToolCall]) -> str:
-        """生成工具调用指纹"""
         features = []
         for tc in tool_calls:
             args = tc.arguments
@@ -194,49 +194,16 @@ class ReActExecution:
         self, tool_calls: List[ToolCall], ctx: ExecutionContext
     ) -> List[LLMMessage]:
         """执行工具调用"""
-        results = []
+        # 🛠️ 修复点 2：防御性时间限幅，防止计算出 0 或负数导致异步 wait_for 崩溃
+        safe_remaining = max(1.0, ctx.remaining_time - 0.5)
+        tool_timeout = min(10.0, safe_remaining)
 
-        # 计算工具执行的超时时间
-        tool_timeout = min(10.0, ctx.remaining_time - 0.5)  # 留出 0.5 秒缓冲
-
-        for tc in tool_calls:
-            try:
-                self.logger.debug(
-                    f"Executing tool: {tc.name} with args: {tc.arguments}"
-                )
-
-                # 准备工具执行上下文
-                executor_ctx = {
-                    "session_id": ctx.session.session_id,
-                    "execution_id": ctx.execution_id,
-                    "agent_id": f"worker_{ctx.execution_id}",
-                    "timeout_limit_seconds": tool_timeout,
-                    "remaining_session_time": ctx.session_view.remaining_time,
-                }
-
-                # 执行工具
-                result_content = await self.tool_executor.execute(
-                    tool_name=tc.name, arguments=tc.arguments, ctx=executor_ctx
-                )
-
-                # 创建工具结果消息
-                result_msg = LLMMessage.tool(
-                    content=str(result_content)
-                    if result_content is not None
-                    else "No result",
-                    tool_call_id=tc.id,
-                )
-                results.append(result_msg)
-
-            except Exception as e:
-                self.logger.error(
-                    f"Tool execution failed for {tc.name}: {e}", exc_info=True
-                )
-                # 即使工具失败，也要返回错误消息，让 LLM 知道
-                error_msg = LLMMessage.tool(
-                    content=f"Error executing tool {tc.name}: {str(e)}",
-                    tool_call_id=tc.id,
-                )
-                results.append(error_msg)
-
+        executor_ctx = {
+            "session_id": ctx.session.session_id,
+            "execution_id": ctx.execution_id,
+            "agent_id": f"worker_{ctx.execution_id}",
+            "timeout_limit_seconds": tool_timeout,
+            "remaining_session_time": ctx.session_view.remaining_time,
+        }
+        results = await self.tool_executor.execute(tool_calls, ctx=executor_ctx)
         return results

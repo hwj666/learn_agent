@@ -116,11 +116,10 @@ class BaseTool(Generic[ArgsType], ABC):
                 f"工具 {cls.__name__} 的 description 不能为空，这对 LLM 理解工具至关重要。"
             )
 
-        full_name = f"{cls.toolset}.{cls.name}"
         schema = {
             "type": "function",
             "function": {
-                "name": full_name,
+                "name": cls.name,
                 "description": cls.description,
                 "parameters": {"type": "object", "properties": {}},
             },

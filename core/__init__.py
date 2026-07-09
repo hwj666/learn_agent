@@ -3,8 +3,6 @@ core 模块
 核心组件：Agent、Policy、Context、Orchestrator 等
 """
 
-from schema.context import ExecutionContext
-
 __all__ = [
     # Agent
     "Agent",

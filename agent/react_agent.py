@@ -2,27 +2,30 @@
 import json
 import time
 import hashlib
-import logging
 from typing import List, Any
 from schema.message import LLMMessage
-
-# 🚀 顶层显式汇聚下游的控制层与数据契约层
-from schema.session import AgentSession
+from schema.session import AsyncAgentSession as AgentSession
 from schema.metadata import ReActTurnMetadata
 
 
 class ReActExecution:
-    """微观 ReAct 物理探针（防空转硬管制版）"""
+    """微观 ReAct 物理探针（极致去冗余·完全体）"""
 
     def __init__(self, openai_client: Any, tool_executor: Any, max_turns: int = 6):
         self.client = openai_client
         self.tool_executor = tool_executor
         self.max_turns = max_turns
 
-    async def _call_llm(self, messages: List[Any], session: AgentSession) -> Any:
-        session.log_trace(
-            f"🤖 Interrogating LLM with {len(messages)} historical records..."
+    async def _call_llm(
+        self, messages: List[Any], session: AgentSession, attempt_idx: int
+    ) -> Any:
+
+        session.logger.info(
+            "[LLM_Client] 🤖 Interrogating LLM with %d historical records...",
+            len(messages),
         )
+
+        # 真正的异步非阻塞 LLM 网络 IO 交互
         llm_response = await self.client.chat(
             messages=messages, tools=self.tool_executor.tools
         )
@@ -30,7 +33,9 @@ class ReActExecution:
         if llm_response.usage:
             p_tok = llm_response.usage.get("prompt_tokens", 0)
             c_tok = llm_response.usage.get("completion_tokens", 0)
-            session.consume_tokens(tokens=p_tok + c_tok)
+            # 🛡️ 显式透传当前大圈的 attempt_idx，支持通过 node_id 自定义扣费归属，彻底免除漂移
+            session.consume_tokens_stream(tokens=p_tok + c_tok, attempt_idx=attempt_idx)
+
         return llm_response
 
     async def run(
@@ -39,6 +44,7 @@ class ReActExecution:
         context_data: dict,
         session: AgentSession,
         execution_id: str,
+        attempt_idx: int = 0,  # 🎯 核心补齐：无缝接收外层拓扑重试循环的 micro-slot 槽位序号
     ) -> str:
         system_prompt = (
             "你是一个勤奋的体力工作者,用注册的工具完成当前任务。\n"
@@ -54,25 +60,33 @@ class ReActExecution:
         ]
 
         for turn in range(1, self.max_turns + 1):
-            session.check_budget()
+            # 看门狗纯计算原子判定，稳死拦截超时
+            session.check_budget_pure()
 
-            # 实例化从 schema.metadata 导入的强类型契约
+            # 实例化强类型元数据契约（用于承载大模型反思所需的结构化记忆）
             turn_meta = ReActTurnMetadata(
                 description=f"Turn {turn}: Thought-Action-Observation",
                 message_count=len(messages),
             )
-
+            node_id = f"{execution_id}_Turn_{turn}"
             with session.step(
-                node_id=f"{execution_id}_Turn_{turn}", metadata=turn_meta
+                node_id=node_id, metadata=turn_meta, attempt_idx=attempt_idx
             ):
-                llm_response = await self._call_llm(messages, session)
-                session.log_trace(
-                    f"💭 Thought Content: {llm_response.reasoning_content or 'None'}"
+                llm_response = await self._call_llm(messages, session, attempt_idx)
+
+                session.logger.info(
+                    "💭 Thought Content: %s", llm_response.reasoning_content or "None"
                 )
 
+                # 动态填充记忆资产
                 turn_meta.content = llm_response.content
                 turn_meta.reasoning = llm_response.reasoning_content
                 turn_meta.has_tool_calls = bool(llm_response.tool_calls)
+
+                # 🛡️ 架构对齐 5: 大模型的思考记忆被完美、按轮次按重试落入明细账本中
+                session.update_metadata_stream(
+                    node_id=node_id, metadata=turn_meta, attempt_idx=attempt_idx
+                )
 
                 messages.append(
                     LLMMessage.assistant(
@@ -86,14 +100,16 @@ class ReActExecution:
                 if not llm_response.tool_calls:
                     reply_text = llm_response.content or ""
                     if "最终答案" in reply_text or turn == self.max_turns:
-                        session.log_trace(
-                            f"🎯 Verified final answer signature obtained at turn {turn}."
+                        # 🟢 5. 延迟占位插值修复
+                        session.logger.info(
+                            "🎯 Verified final answer signature obtained at turn %d.",
+                            turn,
                         )
                         return reply_text.strip()
                     else:
-                        session.log_trace(
-                            "⚠️ [VACANT_ALERT] LLM is idling. Issuing forced guidance.",
-                            level=logging.WARNING,
+                        # 🟢 6. 延迟占位插值修复
+                        session.logger.warning(
+                            "⚠️ [VACANT_ALERT] LLM is idling. Issuing forced guidance."
                         )
                         messages.append(
                             LLMMessage.user(
@@ -102,7 +118,7 @@ class ReActExecution:
                         )
                         continue
 
-                # 特征指纹注册去重
+                # 特征指纹注册去重（纯同步原子拦截判定，绝不给卡死留下任何弹药）
                 fp = self._get_fingerprint(llm_response.tool_calls)
                 if session.check_and_record_fingerprint(fp):
                     messages.append(
@@ -112,18 +128,26 @@ class ReActExecution:
                     )
                     continue
 
-                # 执行物理工具调用
+                # 执行物理工具调用（依然涉及外部网络 IO，保持 await）
                 tool_results = await self._execute_tools(
                     llm_response.tool_calls, session, execution_id
                 )
+
+                # 补充工具返回结果元数据，并再次精准流式推送进当前重试位的结构化记忆中
                 turn_meta.tool_results = [
-                    {"role": r.role, "content": r.content[:60]} for r in tool_results
+                    {"role": r.role, "content": r.content[:60] if r.content else ""}
+                    for r in tool_results
                 ]
+                session.update_metadata_stream(
+                    node_id=node_id, metadata=turn_meta, attempt_idx=attempt_idx
+                )
+
                 messages.extend(tool_results)
 
-                session.check_budget()
+                # 步骤结束前做最后的纯计算预算复核
+                session.check_budget_pure()
 
-        raise RuntimeError(f"Max turns limit reached.")
+        raise RuntimeError(f"Max turns limit reached ({self.max_turns}).")
 
     def _get_fingerprint(self, tool_calls: List[Any]) -> str:
         features = [
@@ -137,12 +161,20 @@ class ReActExecution:
     ) -> List[Any]:
         now = time.time()
         tool_timeout = min(10.0, max(1.0, session.local_deadline - now - 0.5))
-        session.log_trace(
-            f"🔌 [DISPATCH] Invoking tool executor. Timeout barrier: {tool_timeout:.2f}s"
+
+        # 🟢 7. 延迟占位插值修复
+        session.logger.info(
+            "[Tool_Dispatcher] 🔌 [DISPATCH] Invoking tool executor. Timeout barrier: %.2fs",
+            tool_timeout,
         )
 
+        # 结合动态计算的 tool_timeout 注入到 Context 中防止工具层无限挂起事件循环
         results = await self.tool_executor.execute(
             tool_calls,
-            ctx={"session_id": session.session_id, "execution_id": execution_id},
+            ctx={
+                "session_id": session.session_id,
+                "execution_id": execution_id,
+                "timeout": tool_timeout,
+            },
         )
         return results

@@ -10,7 +10,7 @@ from schema.logger import create_async_production_logger
 # 🟢 核心对齐：统一引入运行时上下文大管家，彻底消灭散落的全局 ContextVar 变量
 from schema.context import RuntimeContext
 
-from schema.session import AsyncAgentSession as AgentSession
+from schema.session.session import AsyncAgentSession as AgentSession
 from schema.metadata import PlannerMetadata, SubStepMetadata
 from core.openai_client import OpenAIClient
 from tools.execute import ToolExecutor

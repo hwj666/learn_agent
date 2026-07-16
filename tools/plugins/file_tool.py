@@ -1,8 +1,7 @@
 import os
 import re
 from typing import Any, Dict, Optional
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, Field, field_validator, model_validator
 from tools.base import BaseTool
 from tools.registry import ToolRegistry
 
@@ -88,12 +87,39 @@ class FileViewArgs(BaseModel):
     path: str = Field(description="文件路径。支持绝对或相对路径。")
     start_line: int = Field(
         default=1,
-        description="从第几行开始查看。从 1 开始数。如果填错或填负数会自动纠正为 1。",
+        description="从第几行开始查看。从 1 开始数。如果填错、填负数或填了极大的数字，会自动纠正为 1。",
     )
     max_lines: int = Field(
         default=15,
         description="本次查看几行。默认 15 行，最多 30 行。小模型请勿看太多，防止遗忘上下文！",
     )
+
+    # 💡 针对小模型乱传 start_line 的强行纠正校验器
+    @field_validator("start_line", mode="before")
+    @classmethod
+    def clean_start_line(cls, v):
+        try:
+            val = int(v)
+            # 如果是负数，或者超过了 10 万行的离谱数字（0.8B几乎不可能在处理10万行以上代码）
+            if val < 1 or val > 100000:
+                return 1
+            return val
+        except (ValueError, TypeError):
+            return 1  # 如果模型传了字符串或其他奇葩类型，直接兜底为 1
+
+    # 💡 针对小模型乱传 max_lines 的强行截断校验器
+    @field_validator("max_lines", mode="before")
+    @classmethod
+    def clean_max_lines(cls, v):
+        try:
+            val = int(v)
+            if val < 1:
+                return 15  # 负数重置为默认值
+            if val > 30:
+                return 30  # 超过 30 行直接截断成 30
+            return val
+        except (ValueError, TypeError):
+            return 15
 
 
 @ToolRegistry.register(name="file_view", toolset="file_ops")
@@ -104,7 +130,6 @@ class FileViewTool(BaseTool[FileViewArgs]):
         "1. 在修改代码（调用 patch_file_range）之前，必须先用本工具确认代码精准行号和旧内容快照。\n"
         "2. 单次最多只能看 30 行。如果文件很长，请根据返回的总行数，分批改变 start_line 进行翻页查看。"
     )
-    toolset = "file_ops"
 
     async def execute(self, ctx: Dict[str, Any], args: FileViewArgs) -> str:
         try:
@@ -302,17 +327,40 @@ class FileSearchTextTool(BaseTool[SearchTextArgs]):
 
 
 class PatchFileRangeArgs(BaseModel):
-    path: str = Field(description="要修改的文件路径。支持相对路径。")
-    line_start: int = Field(
-        description="修改区间的起始行号（从 1 开始）。小模型请尽量填准。"
-    )
-    line_end: int = Field(description="修改区间的结束行号。包含这一行。")
+    path: str = Field(description="要修改的文件路径。")
+    line_start: int = Field(description="起始行号（从 1 开始）。")
+    line_end: int = Field(description="结束行号（包含这一行）。")
     old_content: str = Field(
-        description="该区间内目前实际存在的旧代码。必须提供，用于防幻觉校验。"
+        description="该区间内目前实际存在的旧代码。严禁传空字符串！"
     )
-    new_content: str = Field(
-        description="想替换成的新代码。若想删除该区间，请直接传空字符串。"
-    )
+    new_content: str = Field(description="想替换成的新代码。")
+
+    @model_validator(mode="after")
+    def clean_and_fix_args(self) -> "PatchFileRangeArgs":
+        current_work_dir = os.getcwd()
+        if os.path.isabs(self.path):
+            if self.path.startswith(current_work_dir):
+                self.path = os.path.relpath(self.path, current_work_dir)
+            else:
+                self.path = self.path.lstrip("/")
+
+        # 2. 拦截 line_start 的异常数字
+        if self.line_start < 1 or self.line_start > 100000:
+            self.line_start = 1
+
+        if not self.old_content:
+            old_lines_count = 1
+        else:
+            normalized_content = self.old_content.replace("\r\n", "\n")
+            old_lines_count = normalized_content.count("\n") + (
+                0 if normalized_content.endswith("\n") else 1
+            )
+        expected_end = self.line_start + max(1, old_lines_count) - 1
+
+        if self.line_end != expected_end or self.line_end > 100000:
+            self.line_end = expected_end
+
+        return self
 
 
 @ToolRegistry.register(name="patch_file_range", toolset="file_ops")
@@ -464,15 +512,14 @@ class ListDirTreeArgs(BaseModel):
     )
     max_depth: int = Field(
         default=2,
-        description="目录树展示的最大嵌套深度。默认 2 层，最多允许 4 层。小模型请先从 2 层开始看，防止上下文崩溃！",
+        description="目录树展示的最大嵌套深度。默认 2 层，最多允许 4 层。",
     )
 
 
-@ToolRegistry.register(name="list_dir_tree", toolset="file_ops")
+@ToolRegistry.register(name="list_dir_tree", toolset="file_ops1")
 class ListDirTreeTool(BaseTool[ListDirTreeArgs]):
     description = (
-        "【项目全局导航】以可视化的树状图（Tree）形式列出指定目录下的文件夹和文件结构。\n"
-        "【使用规范】: 当你不知道某个文件在哪个具体文件夹下、或者想了解项目的整体架构时，请优先使用本工具。单次展示深度受到严格限制，防止刷屏。"
+        "【项目全局导航】以可视化的树状图（Tree）形式列出指定目录下的文件夹和文件结构。"
     )
     toolset = "file_ops"
 
@@ -509,39 +556,58 @@ class ListDirTreeTool(BaseTool[ListDirTreeArgs]):
         ".lock",
     )
 
-    async def execute(self, ctx: Dict[str, Any], args: ListDirTreeArgs) -> str:
+    async def execute(self, ctx: Dict[str, Any], args: Any) -> str:
         try:
-            workspace_dir = os.path.abspath(ctx.get("workspace_dir", "."))
-            safe_target = os.path.abspath(os.path.join(workspace_dir, args.path))
+            if isinstance(args, dict):
+                validated_args = ListDirTreeArgs(**args)
+            elif isinstance(args, ListDirTreeArgs):
+                validated_args = args
+            else:
+                return f"错误：不支持的参数契约类型 {type(args)}"
 
-            # 1. 安全沙箱与边界检查
+            workspace_dir = os.path.abspath(ctx.get("workspace_dir", "."))
+            safe_target = os.path.abspath(
+                os.path.join(workspace_dir, validated_args.path)
+            )
+
+            # 安全边界检查
             if not safe_target.startswith(workspace_dir):
                 return "错误：禁止查看工作区外部的目录树。"
             if not os.path.exists(safe_target):
-                return f"错误：指定的路径 '{args.path}' 不存在。"
+                return f"错误：指定的路径 '{validated_args.path}' 不存在。"
             if not os.path.isdir(safe_target):
-                return f"错误：路径 '{args.path}' 是一个具体文件，不是文件夹。若要看文件内容请使用 file_view。"
+                return (
+                    f"错误：路径 '{validated_args.path}' 是一个文件。请使用 file_view。"
+                )
 
-            # 严格限制最大深度，防止 ReDoS 或超大树刷屏
-            cleaned_depth = min(max(1, args.max_depth), 4)
+            cleaned_depth = min(max(1, validated_args.max_depth), 4)
 
-            # 2. 递归构建树状文本
-            tree_lines = [
-                f"📁 {os.path.basename(safe_target) if os.path.basename(safe_target) else '.'}"
-            ]
+            # 🔒 修复点 1：显式初始化一个干净、局部隔离的空全局容器，不带任何默认参数污染
+            raw_tree_nodes = []
+
+            # 根节点标记
+            root_name = (
+                os.path.basename(safe_target) if os.path.basename(safe_target) else "."
+            )
+            raw_tree_nodes.append(f"📁 {root_name}")
+
+            # 启动递归物理扫描
             self._build_tree(
-                safe_target,
-                cleaned_depth,
+                current_dir=safe_target,
+                max_depth=cleaned_depth,
                 current_depth=1,
                 prefix="",
-                tree_lines=tree_lines,
+                tree_lines=raw_tree_nodes,
             )
 
-            return (
-                f"【项目目录树】当前展示路径 '{args.path}' 的骨架结构（最大深度限制为 {cleaned_depth} 层）：\n"
+            # 🔒 修复点 2：仅在最终出口进行一次性缝合，Header 绝对不参与内部递归循环
+            final_output = (
+                f"【项目目录树】当前展示路径 '{validated_args.path}' 的骨架结构（最大深度限制为 {cleaned_depth} 层）：\n"
                 f"--------------------------------------------------\n"
-                f"\n".join(tree_lines)
+                ▪ "\n".join(raw_tree_nodes)
+
             )
+            return final_output
 
         except Exception as e:
             return f"生成目录树失败，系统异常: {str(e)}"
@@ -554,17 +620,14 @@ class ListDirTreeTool(BaseTool[ListDirTreeArgs]):
         prefix: str,
         tree_lines: list,
     ):
-        """递归扫描核心逻辑，带单层数量控制防护"""
         if current_depth > max_depth:
             return
 
         try:
-            # 获取当前目录下所有的子项
             all_entries = os.listdir(current_dir)
         except Exception:
-            return  # 遇到无权限读取的目录直接跳过
+            return
 
-        # 分离并过滤文件夹与文件
         dirs = []
         files = []
         for entry in all_entries:
@@ -576,11 +639,9 @@ class ListDirTreeTool(BaseTool[ListDirTreeArgs]):
                 if not entry.endswith(self.EXCLUDE_EXTS):
                     files.append(entry)
 
-        # 排序保证树状图输出的稳定性
         dirs.sort()
         files.sort()
 
-        # 针对小模型的终极防御：如果单层文件太多（比如一个 img 夹子里有 200 张图），强制截断
         MAX_FILES_PER_DIR = 15
         total_files_count = len(files)
         if total_files_count > MAX_FILES_PER_DIR:
@@ -589,32 +650,55 @@ class ListDirTreeTool(BaseTool[ListDirTreeArgs]):
         else:
             has_omitted_files = False
 
-        # 合并当前层级要展示的全部节点
         entries_to_show = [(d, True) for d in dirs] + [(f, False) for f in files]
         total_entries = len(entries_to_show)
 
         for idx, (name, is_dir) in enumerate(entries_to_show):
-            # 判断是否是当前层级的最后一个展示项
             is_last = (idx == total_entries - 1) and not has_omitted_files
 
-            # 拼接美化过的树状分支连线
             connector = "└── " if is_last else "├── "
             icon = "📁 " if is_dir else "📄 "
+
+            # 🔒 修复点 3：这里只 append 单纯美化后的行，没有任何外层 Header 字符串混入！
             tree_lines.append(f"{prefix}{connector}{icon}{name}")
 
-            # 如果是文件夹，则计算下一层的缩进并递归进入
             if is_dir:
                 next_prefix = prefix + ("    " if is_last else "│   ")
+                # 显式传递当前作用域的指针
                 self._build_tree(
-                    os.path.join(current_dir, name),
-                    max_depth,
-                    current_depth + 1,
-                    next_prefix,
-                    tree_lines,
+                    current_dir=os.path.join(current_dir, name),
+                    max_depth=max_depth,
+                    current_depth=current_depth + 1,
+                    prefix=next_prefix,
+                    tree_lines=tree_lines,
                 )
 
-        # 如果被截断了，在当前目录的末尾追加省略提示
         if has_omitted_files:
             tree_lines.append(
-                f"{prefix}└── ... (还有 {total_files_count - MAX_FILES_PER_DIR} 个文件由于数量过多已自动省略)"
+                f"{prefix}└── ... (还有 {total_files_count - MAX_FILES_PER_DIR} 个文件已省略)"
             )
+
+
+class FileExistsArgs(BaseModel):
+    file_path: str = Field(
+        ..., description="需要检查的文件的路径。例如：'./work/test.py'"
+    )
+
+
+@ToolRegistry.register(name="file_exists", toolset="file")
+class FileExistsTool(BaseTool[FileExistsArgs]):
+    description = (
+        "专门用于判断某个特定的文件或文件夹在本地系统中是否存在。"
+        "\n【⚠️ 严禁行为】: 如果你已经明确知道要找的文件名，严禁调用 list_dir 工具去遍历整个目录，必须优先调用本工具进行精准判断。"
+    )
+
+    # 🟢 修正：将 _run 改为 execute，并补全 ctx 参数以满足基类抽象方法要求
+    async def execute(self, ctx: Dict[str, Any], args: FileExistsArgs) -> str:
+        # 清洗路径字符串
+        path = args.file_path.strip().strip("'\"")
+
+        if os.path.exists(path):
+            file_type = "目录" if os.path.isdir(path) else "文件"
+            return f"存在: 路径 '{path}' 确实存在，它是一个{file_type}。"
+        else:
+            return f"不存在: 路径 '{path}' 在系统中不存在。"

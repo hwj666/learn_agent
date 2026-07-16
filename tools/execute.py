@@ -1,38 +1,38 @@
 import asyncio
-import inspect
+import copy
 import json
-import re
-from typing import Any, Dict, List, Set
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Tuple, Union
 
 from pydantic import ValidationError
-
 from schema.message import LLMMessage, ToolCall, ToolResult
-from tools.registry import ToolRegistry
+from tools.base import BaseTool
+
+logger = logging.getLogger("ToolExecutor")
 
 
-# =====================================================================
-# 5. 极致并发、完全无状态的工具执行核心器
-# =====================================================================
 class ToolExecutor:
-    def __init__(
-        self,
-        allowed_toolsets: Set[str] | None = None,
-        max_concurrency: int = 16,
-    ) -> None:
-        self.allowed_toolsets = allowed_toolsets or set()
-        self._json_pattern = re.compile(r"(\{.*\})", re.DOTALL)
+    """【业界标准：纯粹的执行发动机 - 终极安全无疵版】
+
+    具备动态线程熔断、深层上下文隔离、防 ReDoS 参数解析以及全链路异常降级的生产级工具执行器。
+    """
+
+    def __init__(self, max_concurrency: int = 16) -> None:
         self._semaphore = asyncio.Semaphore(max_concurrency)
-        self._tools_schema = self._get_schemas()
+        self._max_workers = max_concurrency * 4
 
-    def _get_schemas(self) -> List[Dict[str, Any]]:
-        tool_classes = ToolRegistry.get_tools_by_set(self.allowed_toolsets)
-        return [cls.to_schema() for _, cls in sorted(tool_classes.items())]
+        self._thread_pool = ThreadPoolExecutor(
+            max_workers=self._max_workers, thread_name_prefix="tool_sync_worker"
+        )
+        self._is_shutdown = False
+        self._lock = threading.Lock()  # 真正用于保护和切换 shutdown 状态的原子锁
 
-    @property
-    def tools(self) -> List[Dict[str, Any]]:
-        return self._tools_schema
-
-    def _parse_arguments(self, arguments: Any) -> Dict[str, Any]:
+    def _parse_arguments(
+        self, arguments: Union[str, Dict[str, Any], None]
+    ) -> Dict[str, Any]:
+        """流式兼容的参数解析器 (完全移除正则，根除 ReDoS 并提升性能)"""
         if not arguments:
             return {}
         if isinstance(arguments, dict):
@@ -41,138 +41,223 @@ class ToolExecutor:
             raise ValueError("Arguments must be str or dict")
 
         cleaned_args = arguments.strip()
+
         if cleaned_args.startswith("```"):
-            cleaned_args = re.sub(
-                r"^```(?:json)?\n?|\n?```$", "", cleaned_args, flags=re.IGNORECASE
-            ).strip()
+            if cleaned_args.startswith("```json"):
+                cleaned_args = cleaned_args[7:]
+            else:
+                cleaned_args = cleaned_args[3:]
+            if cleaned_args.endswith("```"):
+                cleaned_args = cleaned_args[:-3]
+            cleaned_args = cleaned_args.strip()
 
-        match = self._json_pattern.search(cleaned_args)
-        if match:
-            cleaned_args = match.group(1)
-
-        return json.loads(cleaned_args)
+        try:
+            return json.loads(cleaned_args)
+        except json.JSONDecodeError:
+            start = cleaned_args.find("{")
+            end = cleaned_args.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(cleaned_args[start : end + 1])
+                except json.JSONDecodeError:
+                    pass
+            raise
 
     async def _execute_core_with_timeout(
-        self, tool_instance: Any, ctx: Dict[str, Any], args: Any, timeout: float
+        self,
+        tool_instance: BaseTool,
+        ctx: Dict[str, Any],
+        args: Any,
+        timeout: float,
     ) -> Any:
-        # 精准切分：异步函数直接走 wait_for，同步函数通过 to_thread 扔给线程池，绝不卡死主线程事件循环
-        if inspect.iscoroutinefunction(tool_instance.execute):
-            return await asyncio.wait_for(
-                tool_instance.execute(ctx, args), timeout=timeout
-            )
-        else:
-            return await asyncio.wait_for(
-                asyncio.to_thread(tool_instance.execute, ctx, args), timeout=timeout
-            )
+        """底层核心执行器：精准区分同步/异步，实施运行时双轨调度与线程池过载熔断"""
+        # 线程安全地检查关闭状态
+        with self._lock:
+            if self._is_shutdown:
+                raise RuntimeWarning("Executor is shutting down, request rejected.")
+
+        async with self._semaphore:
+            # 1. 异步工具执行轨道
+            if asyncio.iscoroutinefunction(tool_instance.execute):
+                return await asyncio.wait_for(
+                    tool_instance.execute(ctx, args), timeout=timeout
+                )
+
+            # 2. 同步工具执行轨道
+            # 动态检测同步线程池水位，防止发生超时逃逸的孤儿线程堆积撑爆系统
+            current_active_sync_tasks = self._thread_pool._work_queue.qsize()
+            if current_active_sync_tasks >= self._max_workers * 2:
+                logger.critical(
+                    f"[EngineBlock] 同步工具线程池排队队列过长 ({current_active_sync_tasks})，"
+                    f"触发过载保护。强制熔断当前工具 `{tool_instance.__class__.__name__}` 的执行。"
+                )
+                raise RuntimeWarning(
+                    "System sync thread pool is overloaded. Request throttled."
+                )
+
+            loop = asyncio.get_running_loop()
+            try:
+                future = loop.run_in_executor(
+                    self._thread_pool, tool_instance.execute, ctx, args
+                )
+            except RuntimeError as re:
+                if "executor is shutdown" in str(re).lower():
+                    raise RuntimeWarning("Executor was shut down during scheduling.")
+                raise
+
+            try:
+                return await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError:
+                active_threads = threading.active_count()
+                logger.critical(
+                    f"[EngineWarning] 同步工具 `{tool_instance.__class__.__name__}` 触发协程级超时！"
+                    f"该同步线程无法被外部强行中止，可能已变为孤儿挂起线程。当前进程总线程数: {active_threads}。"
+                    f"请务必检查该工具内部是否缺失网络 timeout 参数设置！"
+                )
+                raise
 
     async def execute(
-        self, tool_calls: List[ToolCall], ctx: Dict[str, Any], timeout: float = 30.0
+        self,
+        resolved_calls: List[Tuple[ToolCall, BaseTool]],
+        ctx: Dict[str, Any],
+        timeout: float = 30.0,
     ) -> List[LLMMessage]:
-        if not tool_calls:
+        """批量并发执行工具入口（对外核心 API）"""
+        if not resolved_calls:
             return []
 
-        tasks = [
-            self._execute_single(tool_call, ctx, timeout) for tool_call in tool_calls
-        ]
+        with self._lock:
+            if self._is_shutdown:
+                logger.error("拒绝执行：ToolExecutor 已经处于关闭状态。")
+                return [
+                    LLMMessage.tool(
+                        call.id, content="系统正在维护，暂时无法处理工具调用。"
+                    )
+                    for call, _ in resolved_calls
+                ]
+
+        # 【修复点 1】为了防止并发任务之间由于共享 ctx 导致竞态冲突，
+        # 在传递给每个独立协程任务前，就在最外层为每个 Task 单独生成独立的 ctx 深拷贝快照
+        tasks = []
+        for tool_call, tool_instance in resolved_calls:
+            try:
+                task_ctx = copy.deepcopy(ctx) if isinstance(ctx, dict) else {}
+            except Exception:
+                logger.warning("Context deepcopy failed, falling back to shallow copy.")
+                task_ctx = ctx.copy() if isinstance(ctx, dict) else {}
+
+            tasks.append(
+                self._execute_single(tool_call, tool_instance, task_ctx, timeout)
+            )
+
+        # 协程级全面并发隔离
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
         final_messages = []
-        for i, res in enumerate(results):
-            tool_call = tool_calls[i]
 
-            # 1. 统一封装为 ToolResult 容器
+        for i, res in enumerate(results):
+            tool_call, _ = resolved_calls[i]
+
             if isinstance(res, Exception):
-                # 捕获 asyncio.gather 级别或线程池本身抛出的极罕见异常
+                logger.critical(f"发动机管线破裂崩溃: {str(res)}", exc_info=res)
                 tool_result = ToolResult(
                     success=False,
-                    content="系统异常，请稍后再试。",
-                    error=f"Task Interrupted: {str(res)}",
+                    content="系统遇到了未预期的执行底层故障。",
+                    error=f"UnhandledEngineException: {type(res).__name__}",
                 )
             elif isinstance(res, ToolResult):
                 tool_result = res
             else:
-                tool_result = ToolResult(
-                    success=False,
-                    content="系统调度错误。",
-                    error="Non-standard protocol response",
-                )
+                # 【优化点 4】如果返回值是复杂结构（dict/list），用 json.dumps 保持标准 JSON 字符串
+                if isinstance(res, (dict, list)):
+                    content_str = json.dumps(res, ensure_ascii=False)
+                else:
+                    content_str = str(res)
+                tool_result = ToolResult(success=True, content=content_str)
 
-            # 2. 💰 释放 ToolResult 的工程价值：统一监控与埋点
             if not tool_result.success:
-                # 在后端使用真正的错误日志（error 字段），报警系统（如 Sentry）会在这里拦截
-                print(
-                    f"[ERROR][Trace:{ctx.get('trace_id')}] 工具 `{tool_call.name}` 执行失败. 详情: {tool_result.error}"
+                # 获取当次请求特有的 trace_id
+                trace_id = (
+                    ctx.get("trace_id", "N/A") if isinstance(ctx, dict) else "N/A"
                 )
-            else:
-                # 可以做成功率统计或耗时统计
-                pass
+                logger.error(
+                    f"[Trace:{trace_id}] 工具 `{tool_call.name}`(CallID:{tool_call.id}) 执行失败. "
+                    f"错误信息: {tool_result.error}"
+                )
 
-            # 3. 🛡️ 完美解耦：只把安全的、纯净的 content 交付给 Agent
             final_messages.append(
-                LLMMessage.tool(
-                    tool_call.id,
-                    content=tool_result.content,  # 👈 大模型只看这个，不再需要 json.dumps
-                )
+                LLMMessage.tool(tool_call.id, content=tool_result.content)
             )
+
         return final_messages
 
     async def _execute_single(
-        self, tool_call: ToolCall, ctx: Dict[str, Any], timeout: float
+        self,
+        tool_call: ToolCall,
+        tool_instance: BaseTool,
+        ctx: Dict[str, Any],
+        timeout: float,
     ) -> ToolResult:
-        print(tool_call.name)
-        tool_cls = ToolRegistry.get_tool(tool_call.name)
-        if not tool_cls or tool_cls.toolset not in self.allowed_toolsets:
-            # 权限拒绝属于工程错误，但需要清晰告诉 Agent 别再试了
-            return ToolResult(
-                success=False,
-                content=f"❌ 权限拒绝：当前策略未获准使用工具 `{tool_call.name}`。",
-                error="PermissionDenied",
-            )
+        """单个工具的单向隔离执行管道"""
+        trace_id = ctx.get("trace_id", "N/A")
 
+        # 1. 参数初步解析
         try:
             arguments_dict = self._parse_arguments(tool_call.arguments)
         except Exception as e:
-            # 参数解析失败，告诉 Agent 它生成的 JSON 格式不对，让它修正后重试
             return ToolResult(
                 success=False,
                 content="参数解析失败，请检查你生成的工具入参 JSON 格式是否正确。",
                 error=f"JSONDecodeError: {str(e)}",
             )
 
-        shadow_ctx = ctx.copy()
+        # 2. 触发强类型 Pydantic 契约校验
+        try:
+            validated_args = tool_instance.args_schema.model_validate(arguments_dict)
+        except ValidationError as ve:
+            logger.warning(
+                f"[Trace:{trace_id}] 工具 `{tool_call.name}` 参数校验未通过. 详情: {ve.errors()}"
+            )
+            readable_errors = [
+                f"Field '{e['loc'][-1]}': {e['msg']}" for e in ve.errors()
+            ]
+            return ToolResult(
+                success=False,
+                content=f"工具调用契约校验失败。具体错误: {'; '.join(readable_errors)}。请修正后重新调用。",
+                error=f"ValidationError: {str(ve.errors())}",
+            )
 
-        async with self._semaphore:
-            try:
-                tool_instance = tool_cls()
-                validated_args = tool_instance.args_schema.model_validate(
-                    arguments_dict
-                )
+        # 3. 触发带超时防御的核心执行
+        try:
+            res_content = await self._execute_core_with_timeout(
+                tool_instance, ctx, validated_args, timeout
+            )
 
-                res_content = await self._execute_core_with_timeout(
-                    tool_instance, shadow_ctx, validated_args, timeout
-                )
+            if isinstance(res_content, ToolResult):
+                return res_content
+            return res_content
 
-                # 成功场景：真正在这里展现 ToolResult 结构体的规范价值
-                return ToolResult(success=True, content=str(res_content))
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[Trace:{trace_id}] 工具 `{tool_call.name}` 执行超时 (限额 {timeout} 秒)."
+            )
+            return ToolResult(
+                success=False,
+                content=f"工具执行超时，未能及时返回结果（时限：{timeout}秒）。",
+                error="AsyncioTimeoutError",
+            )
+        except RuntimeWarning as rw:
+            return ToolResult(
+                success=False,
+                content="由于系统负载过高或正在维护，该工具调用被拒绝。",
+                error=f"RuntimeWarning: {str(rw)}",
+            )
 
-            except ValidationError as ve:
-                # 字段校验失败（如少传了必填参数），content 提示 Agent 缺了什么，以便 Agent 自行修复
-                return ToolResult(
-                    success=False,
-                    content=f"工具调用契约校验失败，可能缺少必填字段或类型错误: {str(ve.errors())}",
-                    error="ValidationError",
-                )
-            except asyncio.TimeoutError:
-                # 超时错误
-                return ToolResult(
-                    success=False,
-                    content="该工具响应超时，请稍后重试或尝试调用其他工具。",
-                    error="TimeoutError",
-                )
-            except Exception as e:
-                # ⚠️ 关键安全保护：防止内部崩溃日志（如 SQL 报错、IP 暴露）污染大模型上下文
-                return ToolResult(
-                    success=False,
-                    content="工具内部执行遇到未预期错误，暂时无法获取结果。",  # 面向 Agent：安全无害
-                    error=f"InternalCrash: {type(e).__name__} - {str(e)}",  # 面向后端：精准排查
-                )
+    def shutdown(self, wait: bool = True) -> None:
+        """【修复点 2】显式提供线程安全的关闭接口，杜绝进程挂起与线程泄露"""
+        with self._lock:
+            if self._is_shutdown:
+                return
+            self._is_shutdown = True
+        logger.info("ToolExecutor 正在关闭，开始释放底层同步线程池...")
+        self._thread_pool.shutdown(wait=wait)
+        logger.info("ToolExecutor 线程池已成功释放。")

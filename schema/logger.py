@@ -5,7 +5,7 @@ import atexit
 import logging
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 from typing import Tuple, Optional
-from schema.context import RuntimeContext
+from schema.session.runtime import RuntimeContext
 
 
 # =====================================================================

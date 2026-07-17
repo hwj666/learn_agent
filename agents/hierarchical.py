@@ -9,7 +9,7 @@ import logging
 from typing import Dict, List, Any, Optional
 from enum import Enum
 
-from schema.context import StepStatus
+from schema.session.runtime import StepStatus
 
 logger = logging.getLogger("HierarchicalOrchestrator")
 

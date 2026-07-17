@@ -4,6 +4,7 @@ import hashlib
 from typing import List, Any, Dict
 from schema.message import LLMMessage
 from schema.metadata import ReActTurnMetadata
+from schema.session.session import AgentSession
 
 
 class ReActExecution:

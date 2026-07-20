@@ -7,7 +7,7 @@ from core.base_client import BaseLLMClient
 from schema.config import ModelConfig
 from handlers.base import BaseStreamHandler
 from handlers.print_handler import PrintStreamHandler
-from tools.extract import extract_implicit_tool_calls
+from tools import extract_implicit_tool_calls
 
 _ = load_dotenv()
 

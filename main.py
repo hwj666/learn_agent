@@ -1,157 +1,163 @@
+"""
+main.py
+🚀 Agent Runtime 总入口
+负责：初始化基础设施 → 编排 Session → 优雅启停 → 全链路可观测
+"""
+
 import asyncio
-import json
 import logging
 import sys
-import os
+import uuid
 
-# 💡 从基础设施引入完全体异步高可用日志工厂
-from schema.logger import create_async_production_logger
-
-# 🟢 核心对齐：统一引入运行时上下文大管家，彻底消灭散落的全局 ContextVar 变量
-from schema.session.runtime import RuntimeContext
-
-from schema.session.session import AgentSession
+from schema.context import AgentContext
 from schema.metadata import PlannerMetadata, SubStepMetadata
 from core.openai_client import OpenAIClient
-from tools.execute import ToolExecutor
-from tools.loader import discover_and_load_tools
+from tools import ToolExecutor
+from tools import discover_and_load_tools
 from schema.config import AppConfig
 from agent.react_agent import ReActExecution
+from tracing import AgentTracker
+from tracing import AgentSpanContext
 
+from tracing import get_agent_logger
 
-def probe_print(msg: str):
-    sys.stdout.write(f"🔍 [PROBE] {msg}\n")
-    sys.stdout.flush()
+# =====================================================================
+# 1. 基础设施初始化（全局单例）
+# =====================================================================
+
+# 扫描并注册所有工具（必须在 Executor 之前）
+discover_and_load_tools()
+
+# 加载应用配置
+config = AppConfig.from_yaml("config.yaml")
+agent_config = config.get_agent("simple_agent")
+
+# 初始化核心引擎
+client = OpenAIClient(agent_config.model_config)
+executor = ToolExecutor()
+agent = ReActExecution(client, executor)
 
 
 # =====================================================================
-# 1. 初始化加载基础资产与引擎单例
+# 2. 核心任务编排管线
 # =====================================================================
-try:
-    discover_and_load_tools()
-    config = AppConfig.from_yaml("config.yaml")
-    agent_config = config.get_agent("simple_agent")
-    client = OpenAIClient(agent_config.model_config)
-    executor = ToolExecutor(allowed_toolsets=agent_config.tool_set)
-    agent = ReActExecution(client, executor)
-except Exception as init_err:
-    probe_print(f"❌ 基础资产或配置文件加载失败: {init_err}")
-    # 预防文件不存在时阻塞后续演示，进行安全降级兜底
-    agent = None
-
-
-# =====================================================================
-# 2. 核心异步任务编排管线
-# =====================================================================
-async def _execute_task(session: AgentSession, worker: ReActExecution):
+async def _execute_task(
+    tracker: AgentTracker,
+    context: AgentContext,
+    worker: ReActExecution,
+) -> None:
+    """
+    微观执行管线：
+    1. 创建任务级 Span
+    2. 运行 ReAct Agent
+    3. 记录最终结果
+    """
     t_idx = 0
     t_desc = "run test.py file"
-    node_id = f"Task_{t_idx}"
+    span_name = "execute_test_file"
 
     task_meta = SubStepMetadata(
-        description=f"Executing subtask {t_idx}: {t_desc}", tool_name="subtask_runner"
+        description=f"Executing subtask {t_idx}: {t_desc}",
+        tool_name="subtask_runner",
     )
 
-    probe_print("进入 _execute_task，激活大管家全局会话域...")
+    async with AgentSpanContext(
+        tracker,
+        span_name=span_name,
+        metadata=task_meta,
+        kind="INTERNAL",
+    ) as step:
+        # 记录输入参数
+        task_meta.arguments = {"task_desc": t_desc}
 
-    # 🌟 核心对齐：利用上下文大管家，锁死当前协程的生命周期拓扑
-    with RuntimeContext.guard_session(session.session_id):
-        with session.step(node_id=node_id, metadata=task_meta):
-            task_meta.arguments = {"task_desc": t_desc}
+        # 执行核心 ReAct 循环
+        task_report = await worker.run(
+            current_task_desc=t_desc,
+            tracker=tracker,
+            context=context,
+        )
 
-            probe_print("session.step 物理管道与日志天网已双向激活...")
+        # 记录输出结果
+        task_meta.output_data = {"final_report": task_report}
+        task_meta.status = "COMPLETED"
 
-            # 使用大管家代理的 Logger 打印进入节点的审计日志
-            session.logger.info(f"开始执行微观节点任务: {t_desc}")
+        # 最后一次刷新元数据
+        await tracker.update_metadata_stream(step.span, metadata=task_meta)
 
-            if worker is None:
-                probe_print(
-                    "⚠️ ReAct 引擎未就绪（可能由于缺少 config.yaml），跳过模型执行步骤。"
-                )
-                task_report = "Mock Report: test.py executed and healed."
-            else:
-                task_report = await worker.run(
-                    current_task_desc=t_desc,
-                    context_data={},
-                    session=session,
-                    execution_id=f"Task_{t_idx}_Exec_0",
-                )
-
-            probe_print(f"ReAct 引擎顺利返回，成果长度: {len(task_report or '')}。")
-            task_meta.output_data = {"final_report": task_report}
-            session.update_metadata_stream(node_id=node_id, metadata=task_meta)
-
-            session.logger.info("微观节点任务执行成功，元数据流已冲刷。")
-
-        probe_print("准备同步累加 Token 消耗记账...")
-        print(f"Task {t_idx} completed safely.")
+        # 打印最终结果
+        print("\n" + "=" * 50)
+        print("✅ 任务执行完成")
+        print(f"📊 最终报告: {task_report[:200]}...")
+        print("=" * 50 + "\n")
 
 
-# =====================================================================
-# 3. 业务引擎主入口
-# =====================================================================
-async def main():
+async def main() -> None:
+    """主异步入口"""
     user_query = "帮我运行一下./work/test.py文件，如果报错则进行修复后再次执行"
-    probe_print(f"用户原始诉求: {user_query}")
 
-    # 🟢 闭环 1：一键激活全局唯一的异步高可用落盘通道（内部包含物理现场打标机）
-    logger, log_listener = create_async_production_logger(
-        logger_name="AgentEngine", log_dir="logs", log_file_name="session_audit.log"
+    # 闭环 1：激活异步高可用日志系统
+
+    session_id = f"session_{uuid.uuid4().hex[:8]}"
+    trace_id = f"tr_{uuid.uuid4().hex[:8]}"
+    init_context = AgentContext(
+        session_id=session_id,
+        tenant_id="tenant_enterprise_group_01",
+        user_id="user_staff_045",
+        trace_id=trace_id,
+        allowed_toolsets={"system_utils", "code_utils"},
+        payload={
+            "user_query": user_query,
+            "working_dir": "./work",
+        },
     )
+    logger = get_agent_logger(init_context)
 
-    # 将高可用异步 Logger 注入到 Session 空间中
-    session = AgentSession(session_id="session_1001", timeout_limit=40.0, logger=logger)
+    # 创建 Session 级 Tracker（大管家）
+    async with AgentTracker(
+        max_token_budget=100000,
+        timeout_limit=40.0,
+        logger=logger,
+    ) as tracker:
+        # 构建初始上下文（不可变数据，支持 fork）
 
-    try:
-        # 稳稳进入全局双向锚定物理域，开始追踪
-        with RuntimeContext.guard_session(session.session_id, trace_id="T-retry-001"):
-            with RuntimeContext.guard_node("Task_0"):
-                logger.info("启动 test.py 自愈修复全链路自动化管线...")
-
-                # 投递执行管线，限时 35 秒强杀看门狗
-                await asyncio.wait_for(_execute_task(session, agent), timeout=35.0)
-
-        probe_print("子任务链条顺利落地，准备执行会话最后 close()...")
-        # 🛡️ 触发优雅停机（Drain）：等待后台事件队列里的资产无损消费并落盘后再放行
-        await session.close()
-        probe_print("会话 close() 完成。")
-
-    except asyncio.TimeoutError:
-        probe_print(
-            "🔥 【超时爆破】子任务管线在 35 秒内未能返回，触发看门狗级联中止强杀！"
+        logger.info(
+            f"🚀 启动 Agent Session | session_id={session_id} | trace_id={trace_id}"
         )
-        await session.close(
-            exc_type=TimeoutError, exc_val="Pipeline stalled and exploded"
-        )
-    except Exception as e:
-        await session.close(exc_type=type(e), exc_val=e)
-        probe_print(f"Main workflow crashed: {e}")
 
-    probe_print("准备调用 session.to_snapshot() 生成读写分离纯净大快照...")
+        try:
+            # 核心微观任务管线（35秒硬超时熔断）
+            await asyncio.wait_for(
+                _execute_task(tracker, init_context, agent),
+                timeout=35.0,
+            )
 
-    try:
-        # 🛡️ 生成 100% 纯净独立的 OTel 事件驱动大快照
-        final_dict = session.to_snapshot()
-        probe_print("大快照字典生成完毕！准备执行 json.dumps()...")
-        final_json = json.dumps(final_dict, indent=2, ensure_ascii=False)
-        print(
-            "\n" + "=" * 18 + " 📊 工业界高级事件驱动 OTel 审计日志大快照 " + "=" * 18
-        )
-        print(final_json)
-    except Exception as snap_err:
-        probe_print(f"💥 快照序列化最终防线崩溃！错误详情: {snap_err}")
+        except asyncio.TimeoutError as t_err:
+            # 超时熔断：异常会由 AgentTracker.__aexit__ 自动处理
+            logger.error(
+                "⏰ Pipeline timeout: global limit exceeded",
+                exc_info=True,
+            )
+            raise TimeoutError(
+                "Pipeline stalled and exploded due to global timeout limit."
+            ) from t_err
 
-    # 🟢 闭环 2：程序完成整体退出前，优雅无损冲刷落盘内存队列残余磁盘 I/O 句柄
-    if log_listener:
-        log_listener.stop()
-        print("\n🔒 后台日志落盘线程安全终止，句柄全部无损释放。")
+        except Exception as e:
+            # 未捕获的业务异常
+            logger.exception("💥 Unhandled exception in main task pipeline")
+            raise
 
 
 if __name__ == "__main__":
-    # 1. 禁言外部 HTTP/三方库等大面积噪声，防止污染控制台输出
+    # =================================================================
+    # 全局日志抑制（防止第三方库污染控制台）
+    # =================================================================
     logging.basicConfig(level=logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
 
-    # 2. 🌟 核心修正：利用 asyncio 驱动异步大系统主脉搏，而不是走同步的死胡同
+    # =================================================================
+    # 启动异步事件循环
+    # =================================================================
+
     asyncio.run(main())

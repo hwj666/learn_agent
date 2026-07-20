@@ -1,7 +1,7 @@
 import sys
 import threading
 from typing import Dict, Set, Type, Callable
-from tools.base import BaseTool
+from .base import BaseTool
 
 
 class ToolRegistry:

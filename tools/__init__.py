@@ -8,17 +8,13 @@ from tools.registry import ToolRegistry
 from tools.execute import ToolExecutor
 from tools.storage import BaseStorage, MemoryStorage
 from tools.extract import extract_implicit_tool_calls
-
+from tools.loader import discover_and_load_tools
 __all__ = [
-    # Base
     "BaseTool",
-    # Registry
     "ToolRegistry",
-    # Executor
     "ToolExecutor",
-    # Storage
     "BaseStorage",
     "MemoryStorage",
-    # Extract
     "extract_implicit_tool_calls",
+    "discover_and_load_tools"
 ]

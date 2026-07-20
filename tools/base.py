@@ -84,7 +84,7 @@ class BaseTool(Generic[ArgsType], ABC):
         )
 
     @abstractmethod
-    async def execute(self, ctx: Dict[str, Any], args: ArgsType) -> Any:
+    def execute(self, ctx: Dict[str, Any], args: ArgsType) -> Any:
         """
         执行工具逻辑。
 

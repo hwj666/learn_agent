@@ -8,7 +8,7 @@ from common.metadata import ReActTurnMetadata, CallLlmMetadata, ExecuteToolMetad
 from tracing import AgentSpanContext
 from tracing import AgentTracker
 from common.message import LLMMessage, ToolCall, ToolResult
-from infra.openai_client import OpenAIClient
+from core.openai_client import OpenAIClient
 from tools import ToolExecutor
 
 logger = logging.getLogger("ReActExecution")

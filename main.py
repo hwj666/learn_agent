@@ -1,163 +1,92 @@
-"""
-main.py
-🚀 Agent Runtime 总入口
-负责：初始化基础设施 → 编排 Session → 优雅启停 → 全链路可观测
-"""
-
+# main.py
 import asyncio
-import logging
-import sys
-import uuid
+from common.exceptions import TimeoutFuseError
 
-from core.agent_context import AgentContext
-from common.metadata import PlannerMetadata, SubStepMetadata
-from infra.openai_client import OpenAIClient
-from tools import ToolExecutor
-from tools import discover_and_load_tools
-from common.config import AppConfig
-from agent.react_agent import ReActExecution
-from tracing import AgentTracker
-from tracing import AgentSpanContext
+# 💡 外部使用唯一标准：所有 API 统一从顶级命名空间引入
+from tracing import (
+    AgentSession, 
+    trace_step, 
+    update_step_metadata, 
+    emit_stream_chunk,
+    ConsoleJsonTransport
+)
 
-from tracing import get_agent_logger
+# ==========================================
+# 🛠️ 2. 原子工具组件层：只需关心打点，不碰 Stream 接口
+# ==========================================
+@trace_step("calculator_tool", log_args=True)
+async def execute_calculation(formula: str) -> int:
+    """普通的数值计算工具"""
+    await asyncio.sleep(0.05)
+    result = eval(formula)
+    
+    # ✅ 工具调用：只更新元数据，不涉及任何 stream 概念
+    await update_step_metadata(status="success", result=result)
+    return result
 
-# =====================================================================
-# 1. 基础设施初始化（全局单例）
-# =====================================================================
+@trace_step("search_weather_tool")
+async def fetch_weather_api(city: str) -> str:
+    """天气查询工具（模拟偶发性超时挂掉）"""
+    await asyncio.sleep(0.05)
+    if city == "TimeoutCity":
+        # 抛出业务异常，底层的 translators 会自动捕捉它
+        raise TimeoutFuseError("Weather API upstream response timeout", error_code="NET_408")
+    return "Sunny, 25°C"
 
-# 扫描并注册所有工具（必须在 Executor 之前）
-discover_and_load_tools()
+# ==========================================
+# 🤖 3. 大模型与 Agent 编排层：按需使用流式 API
+# ==========================================
+@trace_step("llm_generation")
+async def call_llm_stream(prompt: str) -> str:
+    """大模型流式调用步骤"""
+    chunks = ["The answer ", "is based on ", "real-time data."]
+    for chunk in chunks:
+        await asyncio.sleep(0.02)
+        # ✅ 流式调用：仅在大模型吐流的地方显式引入此 API
+        await emit_stream_chunk(chunk)
+        
+    # 渲染结束，上报 Token 消耗
+    await update_step_metadata(tokens=50, cost=0.001)
+    return "".join(chunks)
 
-# 加载应用配置
-config = AppConfig.from_yaml("config.yaml")
-agent_config = config.get_agent("simple_agent")
+@trace_step("agent_orchestrator")
+async def run_agent_brain(user_query: str):
+    """Agent 核心编排大脑"""
+    print("[Agent Brain] 开始决策并拆解任务...")
+    
+    # 嵌套调用分支 1：执行计算工具
+    calc_res = await execute_calculation("1 + 1")
+    
+    # 嵌套调用分支 2：执行天气查询工具
+    try:
+        weather_res = await fetch_weather_api("TimeoutCity")
+    except TimeoutFuseError:
+        # ✅ 业务降级：虽然工具失败了（并被 tracing 记录），但流程继续
+        print("[Agent Brain] 捕获到工具超时，激活降级策略...")
+        weather_res = "Weather data unavailable (Fallback)"
 
-# 初始化核心引擎
-client = OpenAIClient(agent_config.model_config)
-executor = ToolExecutor()
-agent = ReActExecution(client, executor)
+    # 嵌套调用分支 3：驱动 LLM 整合最终回答
+    await call_llm_stream(prompt=f"Combine {calc_res} and {weather_res}")
 
+# ==========================================
+# 🚀 4. 请求最外层入口：拦截整个请求的生命周期
+# ==========================================
+async def handle_user_http_request():
+    """模拟在 Web 框架（如 FastAPI）的最外层入口拦截当前请求"""
+    transport = ConsoleJsonTransport()
+    
+    print("=== [Web 入口] 收到用户请求，启动大容器 ===")
+    
+    # 💡 核心：用大容器包裹整个工作流
+    async with AgentSession(transport) as session:
+        await run_agent_brain(user_query="Check weather and calculate 1+1")
+        
+        # ✅ 修正点：通过 exporter 获取账单快照
+        snapshot = session.exporter.billing_snapshot()
+        print(f"\n[Web 入口] 会话即将关闭，本次请求最终原子计账：总 Tokens={snapshot.tokens}, 总费用=${snapshot.cost:.4f}")
 
-# =====================================================================
-# 2. 核心任务编排管线
-# =====================================================================
-async def _execute_task(
-    tracker: AgentTracker,
-    context: AgentContext,
-    worker: ReActExecution,
-) -> None:
-    """
-    微观执行管线：
-    1. 创建任务级 Span
-    2. 运行 ReAct Agent
-    3. 记录最终结果
-    """
-    t_idx = 0
-    t_desc = "run test.py file"
-    span_name = "execute_test_file"
-
-    task_meta = SubStepMetadata(
-        description=f"Executing subtask {t_idx}: {t_desc}",
-        tool_name="subtask_runner",
-    )
-
-    async with AgentSpanContext(
-        tracker,
-        span_name=span_name,
-        metadata=task_meta,
-        kind="INTERNAL",
-    ) as step:
-        # 记录输入参数
-        task_meta.arguments = {"task_desc": t_desc}
-
-        # 执行核心 ReAct 循环
-        task_report = await worker.run(
-            current_task_desc=t_desc,
-            tracker=tracker,
-            context=context,
-        )
-
-        # 记录输出结果
-        task_meta.output_data = {"final_report": task_report}
-        task_meta.status = "COMPLETED"
-
-        # 最后一次刷新元数据
-        await tracker.update_metadata_stream(step.span, metadata=task_meta)
-
-        # 打印最终结果
-        print("\n" + "=" * 50)
-        print("✅ 任务执行完成")
-        print(f"📊 最终报告: {task_report[:200]}...")
-        print("=" * 50 + "\n")
-
-
-async def main() -> None:
-    """主异步入口"""
-    user_query = "帮我运行一下./work/test.py文件，如果报错则进行修复后再次执行"
-
-    # 闭环 1：激活异步高可用日志系统
-
-    session_id = f"session_{uuid.uuid4().hex[:8]}"
-    trace_id = f"tr_{uuid.uuid4().hex[:8]}"
-    init_context = AgentContext(
-        session_id=session_id,
-        tenant_id="tenant_enterprise_group_01",
-        user_id="user_staff_045",
-        trace_id=trace_id,
-        allowed_toolsets={"system_utils", "code_utils"},
-        payload={
-            "user_query": user_query,
-            "working_dir": "./work",
-        },
-    )
-    logger = get_agent_logger(init_context)
-
-    # 创建 Session 级 Tracker（大管家）
-    async with AgentTracker(
-        max_token_budget=100000,
-        timeout_limit=40.0,
-        logger=logger,
-    ) as tracker:
-        # 构建初始上下文（不可变数据，支持 fork）
-
-        logger.info(
-            f"🚀 启动 Agent Session | session_id={session_id} | trace_id={trace_id}"
-        )
-
-        try:
-            # 核心微观任务管线（35秒硬超时熔断）
-            await asyncio.wait_for(
-                _execute_task(tracker, init_context, agent),
-                timeout=35.0,
-            )
-
-        except asyncio.TimeoutError as t_err:
-            # 超时熔断：异常会由 AgentTracker.__aexit__ 自动处理
-            logger.error(
-                "⏰ Pipeline timeout: global limit exceeded",
-                exc_info=True,
-            )
-            raise TimeoutError(
-                "Pipeline stalled and exploded due to global timeout limit."
-            ) from t_err
-
-        except Exception as e:
-            # 未捕获的业务异常
-            logger.exception("💥 Unhandled exception in main task pipeline")
-            raise
-
+    # 出了 async with，网络队列自动 flush，ContextVar 彻底恢复干净
+    print("=== [Web 入口] 大容器已完美释放，请求结束 ===")
 
 if __name__ == "__main__":
-    # =================================================================
-    # 全局日志抑制（防止第三方库污染控制台）
-    # =================================================================
-    logging.basicConfig(level=logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
-
-    # =================================================================
-    # 启动异步事件循环
-    # =================================================================
-
-    asyncio.run(main())
+    asyncio.run(handle_user_http_request())

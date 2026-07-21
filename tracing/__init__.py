@@ -1,43 +1,35 @@
-from ..common.schema import AgentSpan, StepEvent, StepEventType
-from ..common.exceptions import (
-    AgentBaseException,
-    BudgetExceededError,
-    AgentFuseException,
-    TimeoutFuseError,
-    CancelledFuseError,
-)
-from ..core.runtime_context import AgentContextRegistry
-from .step_context import AgentStepContext, trace_step
-from ..core.budget_guard import BudgetGuard
-from .exporter import AgentEventExporter, EventTransport, WebSocketTransport, get_global_exporter
-from .exception_handlers import translate_exception_to_event
+# ------------------------------------------------------------------
+# Public API imports (absolute, explicit, stable)
+# ------------------------------------------------------------------
 
-# 明确声明包的公开 API
-# 这是非常重要的工程实践，配合 IDE 自动补全和静态检查工具（如 mypy/pyright）
+from tracing.api import (
+    AgentSession,
+    trace_step,
+    update_step_metadata,
+    emit_stream_chunk,
+)
+
+from tracing.infra.transport import (
+    ConsoleJsonTransport,
+    WebSocketTransport,
+)
+
+# ------------------------------------------------------------------
+# Explicit public API surface
+# ------------------------------------------------------------------
+
 __all__ = [
-    # Version
-    # Schema (Data Models)
-    "AgentSpan",
-    "StepEvent",
-    "StepEventType",
-    # Exceptions
-    "AgentBaseException",
-    "BudgetExceededError",
-    "AgentFuseException",
-    "TimeoutFuseError",
-    "CancelledFuseError",
-    # Context & Execution
-    "AgentStepContext",
-    "AgentContextRegistry",
-    "get_current_context",
+    # Session lifecycle
+    "AgentSession",
+
+    # Business-level tracing
     "trace_step",
-    # Budget & Safety
-    "BudgetGuard",
-    # Export & IO
-    "AgentEventExporter",
-    "EventTransport",
+
+    # Decoupled data & streaming APIs
+    "update_step_metadata",
+    "emit_stream_chunk",
+
+    # Transport abstractions
+    "ConsoleJsonTransport",
     "WebSocketTransport",
-    "get_global_exporter",
-    # Internal Logic (rarely used directly)
-    "translate_exception_to_event",
 ]

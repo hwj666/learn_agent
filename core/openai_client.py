@@ -3,8 +3,8 @@ from typing import AsyncGenerator, List, Optional, Tuple, Any
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from common.message import LLMMessage, LLMResponse, ToolCall
-from infra.base_client import BaseLLMClient
 from common.config import ModelConfig
+from core.base_client import BaseLLMClient
 from handlers.base import BaseStreamHandler
 from handlers.print_handler import PrintStreamHandler
 from tools import extract_implicit_tool_calls

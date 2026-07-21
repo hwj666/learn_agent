@@ -9,12 +9,12 @@ import logging
 import sys
 import uuid
 
-from schema.context import AgentContext
-from schema.metadata import PlannerMetadata, SubStepMetadata
-from core.openai_client import OpenAIClient
+from core.agent_context import AgentContext
+from common.metadata import PlannerMetadata, SubStepMetadata
+from infra.openai_client import OpenAIClient
 from tools import ToolExecutor
 from tools import discover_and_load_tools
-from schema.config import AppConfig
+from common.config import AppConfig
 from agent.react_agent import ReActExecution
 from tracing import AgentTracker
 from tracing import AgentSpanContext

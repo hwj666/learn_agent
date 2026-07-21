@@ -1,5 +1,4 @@
 import copy
-import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Type, TypeVar, Generic, get_args, Set
 from pydantic import BaseModel
@@ -92,7 +91,7 @@ class BaseTool(Generic[ArgsType], ABC):
         :param args: 由 args_schema 校验后的强类型参数
         :return: 任意可被 JSON 序列化的结果
         """
-        pass
+        raise NotImplementedError
 
     @classmethod
     def to_schema(cls) -> Dict[str, Any]:

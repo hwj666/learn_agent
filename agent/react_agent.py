@@ -3,12 +3,12 @@ import json
 import logging
 import re
 from typing import List, Any, Optional
-from schema.context import AgentContext
-from schema.metadata import ReActTurnMetadata, CallLlmMetadata, ExecuteToolMetadata
+from core.agent_context import AgentContext
+from common.metadata import ReActTurnMetadata, CallLlmMetadata, ExecuteToolMetadata
 from tracing import AgentSpanContext
 from tracing import AgentTracker
-from schema.message import LLMMessage, ToolCall, ToolResult
-from core.openai_client import OpenAIClient
+from common.message import LLMMessage, ToolCall, ToolResult
+from infra.openai_client import OpenAIClient
 from tools import ToolExecutor
 
 logger = logging.getLogger("ReActExecution")

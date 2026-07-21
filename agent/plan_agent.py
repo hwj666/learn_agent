@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 
 from schema.session.session import SessionContext
 from schema.execution import ExecutionContext, ReadonlySessionView
-from schema.metadata import NodeRecord
+from common.metadata import NodeRecord
 from schema.enums import NodeStatus
 from .react_executor import ReActExecution
 

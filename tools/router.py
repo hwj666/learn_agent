@@ -1,7 +1,7 @@
 import logging
 from typing import List, Dict, Set, Any, Tuple, Optional
 
-from schema.message import LLMMessage, ToolCall
+from common.message import LLMMessage, ToolCall
 from tools.registry import ToolRegistry
 
 logger = logging.getLogger("AgentGateway")

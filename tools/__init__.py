@@ -9,6 +9,7 @@ from tools.execute import ToolExecutor
 from tools.storage import BaseStorage, MemoryStorage
 from tools.extract import extract_implicit_tool_calls
 from tools.loader import discover_and_load_tools
+
 __all__ = [
     "BaseTool",
     "ToolRegistry",
@@ -16,5 +17,5 @@ __all__ = [
     "BaseStorage",
     "MemoryStorage",
     "extract_implicit_tool_calls",
-    "discover_and_load_tools"
+    "discover_and_load_tools",
 ]

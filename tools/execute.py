@@ -5,7 +5,7 @@ import threading
 from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from pydantic import ValidationError
-from schema.message import ToolCall, ToolResult
+from common.message import ToolCall, ToolResult
 from .base import BaseTool
 from .extract import parse_llm_json_arguments
 

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Awaitable
-from schema.message import LLMMessage, LLMResponse
-from schema.config import ProviderConfig
+from common.message import LLMMessage, LLMResponse
+from common.config import ProviderConfig
 
 # 流式回调函数类型定义（和你的 Agent 完全匹配）
 ChunkCallback = Callable[[str, str, str], Awaitable[None]]

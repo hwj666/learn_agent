@@ -2,7 +2,11 @@
 import traceback
 import logging
 from typing import Callable, Dict, Type, Optional
-from common.exceptions import CancelledFuseError, TimeoutFuseError, TokenBudgetExceededError
+from common.exceptions import (
+    CancelledFuseError,
+    TimeoutFuseError,
+    TokenBudgetExceededError,
+)
 from tracing.core.schema import AgentSpan, StepEvent, StepEventType
 
 logger = logging.getLogger(__name__)
@@ -49,6 +53,7 @@ def _translate_cancelled(exc: CancelledFuseError, span: AgentSpan) -> StepEvent:
         },
     )
 
+
 @register_translator(TokenBudgetExceededError)
 def _translate_budget(exc: TokenBudgetExceededError, span: AgentSpan) -> StepEvent:
     """预算超限异常转换器"""
@@ -64,6 +69,7 @@ def _translate_budget(exc: TokenBudgetExceededError, span: AgentSpan) -> StepEve
             "exc_type": type(exc).__name__,
         },
     )
+
 
 def _translate_generic_crash(exc: Exception, span: AgentSpan) -> StepEvent:
     """通用异常转换器（兜底）"""
@@ -122,4 +128,3 @@ def translate_exception_to_event(
 
     # 没有找到专用转换器，使用通用转换器
     return _translate_generic_crash(exc, span)
-

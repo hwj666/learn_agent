@@ -61,6 +61,7 @@ class WebSocketTransport(EventTransport):
             )
             raise TracingTransportError(f"WebSocket send failed: {exc}") from exc
 
+
 class InMemoryTransport(EventTransport):
     """
     用于测试 / 调试。
@@ -97,13 +98,14 @@ class NoopTransport(EventTransport):
 
 class ConsoleJsonTransport(EventTransport):
     """自定义传输通道：将接收到的链路数据打印到控制台"""
+
     async def send(self, payload: dict) -> None:
         event = payload["event"]
         name = payload["name"]
         # 只显示 Span ID 后 4 位，减少视觉噪音
         span_id = payload["span_id"][-4:]
-        depth = "  " * (payload["depth"] - 1) 
-        
+        depth = "  " * (payload["depth"] - 1)
+
         data = ""
         if payload.get("chunk_text"):
             data = f" -> Chunk: '{payload['chunk_text']}'"

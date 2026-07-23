@@ -3,6 +3,7 @@ from typing import List
 
 from tracing.transport.protocol import Transport
 
+
 class NoopTransport(Transport[object]):
     """空实现，用于测试或禁用导出功能"""
 

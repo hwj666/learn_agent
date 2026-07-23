@@ -54,6 +54,7 @@ class HttpTransport(Transport[dict]):
 
     def _make_timeout(self):
         from aiohttp import ClientTimeout
+
         return ClientTimeout(
             total=self.timeout,
             connect=5.0,
@@ -82,9 +83,7 @@ class HttpTransport(Transport[dict]):
                 if resp.status >= 400:
                     # 4xx/5xx 抛异常，触发 on_drop
                     text = await resp.text()
-                    raise RuntimeError(
-                        f"HTTP {resp.status}: {text[:200]}"
-                    )
+                    raise RuntimeError(f"HTTP {resp.status}: {text[:200]}")
         except ClientError:
             # aiohttp 的网络异常直接向上抛
             raise

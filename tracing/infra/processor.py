@@ -47,7 +47,7 @@ class AsyncBatchProcessor:
         """启动消费者（幂等）"""
         if self._consume_task and not self._consume_task.done():
             return
-        
+
         if self._shutdown_event.is_set():
             self._reset_state()
 

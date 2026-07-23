@@ -99,6 +99,7 @@ class FileTransport(Transport[dict]):
     def _generate_filename(self) -> Path:
         """生成带时间戳的文件名"""
         import time
+
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         return self.base_dir / f"{self.filename_prefix}_{timestamp}.jsonl"
 

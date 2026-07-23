@@ -1,12 +1,14 @@
 import asyncio
 import logging
-from typing import Any, List, Optional, Callable, Awaitable, Tuple
+from typing import Any, Generic, List, Optional, Callable, Awaitable, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 _POISON_PILL = object()
 
+EventT = TypeVar("EventT")
 
-class AsyncBatchProcessor:
+
+class AsyncBatchProcessor(Generic[EventT]):
     """
     高性能异步批处理器
     - 支持定时/定量双触发
@@ -18,7 +20,7 @@ class AsyncBatchProcessor:
         self,
         batch_size: int,
         schedule_delay: float,
-        on_flush_callback: Callable[[List[Any]], Awaitable[None]],
+        on_flush_callback: Callable[[List[EventT]], Awaitable[None]],
         max_queue_size: int = 10000,
         max_concurrent_flushes: int = 5,
         flush_timeout: float = 10.0,
@@ -66,13 +68,13 @@ class AsyncBatchProcessor:
         self._active_flushes.clear()
         logger.debug("Batch processor state reset.")
 
-    async def put(self, item: Any) -> None:
+    async def put(self, item: EventT) -> None:
         """异步放入队列"""
         if self._shutdown_event.is_set():
             raise RuntimeError("Worker is shutting down or stopped")
         await self._queue.put(item)
 
-    def put_nowait(self, item: Any) -> None:
+    def put_nowait(self, item: EventT) -> None:
         """非阻塞放入队列"""
         if self._shutdown_event.is_set():
             raise RuntimeError("Worker is shutting down or stopped")

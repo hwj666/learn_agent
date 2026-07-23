@@ -5,7 +5,7 @@ import logging
 from typing import List, Optional
 from aiohttp import ClientSession, TCPConnector, ClientError
 
-from tracing.transport.protocol import Transport
+from tracing.infra.transport import Transport
 
 
 logger = logging.getLogger(__name__)

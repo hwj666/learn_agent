@@ -8,7 +8,7 @@ from typing import List, Optional
 from aiofiles import open as aio_open
 from aiofiles.os import rename
 
-from tracing.transport.protocol import Transport
+from tracing.infra.transport import Transport
 
 
 logger = logging.getLogger(__name__)

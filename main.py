@@ -1,6 +1,6 @@
 import asyncio
 from tracing.infra.exporter import BatchExporter
-from tracing.transport.noop import NoopTransport
+from tracing.transports.noop import NoopTransport
 
 
 async def main():
@@ -12,7 +12,7 @@ async def main():
     )
 
     await exporter.start()
-    exporter.export_sync({"he": "wen1"})
+    await exporter.export({"he": "wen1"})
 
     await exporter.shutdown()
 

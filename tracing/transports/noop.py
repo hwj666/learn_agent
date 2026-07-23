@@ -1,7 +1,7 @@
 # tracing/infra/transport/noop.py
 from typing import List
 
-from tracing.transport.protocol import Transport
+from tracing.infra.transport import Transport
 
 
 class NoopTransport(Transport[object]):

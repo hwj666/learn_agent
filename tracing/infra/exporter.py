@@ -1,57 +1,25 @@
-# tracing/exporters/batch_exporter.py
 import logging
 import asyncio
-from typing import (
-    List,
-    Optional,
-    Callable,
-    Generic,
-    TypeVar,
-)
+from typing import List, Optional, Callable, Generic, TypeVar
 
 from tracing.infra.processor import AsyncBatchProcessor
-from tracing.transport.protocol import Transport
+from tracing.infra.transport import Transport
 
 logger = logging.getLogger(__name__)
 
-# ==================================================================
-# 类型定义 (Type Definitions)
-# ==================================================================
+EventT = TypeVar("EventT")
+PayloadT = TypeVar("PayloadT")
 
-EventT = TypeVar("EventT")  # 输入：业务事件（如 StepEvent, MetricPoint）
-PayloadT = TypeVar("PayloadT")  # 输出：序列化后的数据（如 dict, bytes）
-
-# 序列化函数签名
 Serializer = Callable[[EventT], PayloadT]
-
-# 丢弃事件回调函数签名
-# 参数: count (丢弃数量), reason (丢弃原因)
 OnDropCallback = Callable[[int, Optional[str]], None]
 
 
-# ==================================================================
-# 核心实现 (Core Implementation)
-# ==================================================================
-
-
 class BatchExporter(Generic[EventT, PayloadT]):
-    """
-    通用批量导出器（生产级·管道核心版）。
-
-    职责：
-    1. 提供异步/同步双模导出接口。
-    2. 保证跨线程安全调用（call_soon_threadsafe）。
-    3. 管理批量聚合与背压。
-    4. 执行序列化回调并调用 Transport。
-
-    非职责（通过回调外置）：
-    - 丢弃事件的统计（交还给 Metrics/Monitor 系统）。
-    - 丢弃后的降级逻辑（如落盘）。
-    """
+    """优化后的批量导出器（纯异步协程版）"""
 
     def __init__(
         self,
-        transport: Transport[PayloadT],
+        transport: "Transport[PayloadT]",
         serializer: Serializer[EventT, PayloadT],
         *,
         batch_size: int = 100,
@@ -59,22 +27,22 @@ class BatchExporter(Generic[EventT, PayloadT]):
         max_queue_size: int = 10000,
         max_concurrent_flushes: int = 5,
         flush_timeout: float = 10.0,
+        # 重点：将 shutdown 的超时时间固定在这里，防止调用时混淆
         shutdown_flush_timeout: float = 5.0,
-        # --- 关键设计 ---
-        # 注入丢弃回调，默认使用静默实现（No-op）
         on_drop: Optional[OnDropCallback] = None,
     ):
         self.transport = transport
         self.serializer = serializer
-        self._on_drop = on_drop or (lambda c, r: None)  # 默认空实现，避免 None check
+        self._on_drop = on_drop or (lambda c, r: None)
+        self.shutdown_flush_timeout = shutdown_flush_timeout
 
-        # 运行时状态
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # 生命周期状态管理
         self._is_running: bool = False
         self._is_shutting_down: bool = False
+        self._lifecycle_lock = asyncio.Lock()
 
-        # 批量处理器
-        self._batch_worker = AsyncBatchProcessor(
+        # 底层异步批量处理器
+        self._batch_worker = AsyncBatchProcessor[EventT](
             batch_size=batch_size,
             schedule_delay=schedule_delay,
             on_flush_callback=self._flush_batch,
@@ -83,25 +51,51 @@ class BatchExporter(Generic[EventT, PayloadT]):
             flush_timeout=flush_timeout,
             shutdown_flush_timeout=shutdown_flush_timeout,
         )
-        self._lock = asyncio.Lock()
 
-    # ==================================================================
-    # 生命周期管理 (Lifecycle)
-    # ==================================================================
+    def _serialize_batch_safe(self, batch: List[EventT]) -> List[PayloadT]:
+        """
+        批量序列化安全包装器（纯协程版）。
+
+        警告：此方法运行于事件循环线程。
+        若 serializer 包含重 CPU 逻辑（如大 JSON dumps 或复杂加密），
+        应考虑在未来迁移至 asyncio.to_thread 以避免阻塞 IO。
+        """
+        payloads: List[PayloadT] = []
+        drop_count = 0
+
+        for event in batch:
+            try:
+                payloads.append(self.serializer(event))
+            except Exception as e:
+                drop_count += 1
+                logger.error(
+                    "Individual event serialization failed.",
+                    exc_info=True,
+                )
+
+        if drop_count > 0:
+            self._on_drop(drop_count, "serialization_error")
+
+        return payloads
 
     async def start(self) -> None:
-        """启动导出器（幂等）"""
-        async with self._lock:
+        """启动导出器（幂等，协程安全）"""
+        async with self._lifecycle_lock:
             if self._is_running:
                 return
-            self._loop = asyncio.get_running_loop()
-            await self._batch_worker.start()
             self._is_running = True
+            self._is_shutting_down = False
+            await self._batch_worker.start()
             logger.info(f"{self.__class__.__name__} started.")
 
-    async def shutdown(self, timeout: float = 10.0) -> None:
-        """优雅停机"""
-        async with self._lock:
+    async def shutdown(self) -> None:
+        """
+        优雅停机（增强数据保护版）。
+
+        注意：此方法不接受 timeout 参数，统一使用初始化时设定的
+        `shutdown_flush_timeout`，以确保配置的一致性。
+        """
+        async with self._lifecycle_lock:
             if not self._is_running or self._is_shutting_down:
                 return
 
@@ -109,115 +103,68 @@ class BatchExporter(Generic[EventT, PayloadT]):
             self._is_shutting_down = True
 
             try:
-                await self._batch_worker.stop(timeout=timeout)
+                # 使用初始化时设定的超时时间，而非运行时传入
+                await self._batch_worker.stop(timeout=self.shutdown_flush_timeout)
             except Exception as e:
                 logger.error(f"Error during batch worker stop: {e}", exc_info=True)
             finally:
+                # 无论成功与否，都将状态置为 False，防止僵尸进程
                 self._is_running = False
                 self._is_shutting_down = False
-                self._loop = None
                 logger.info("[AUDIT] Exporter shutdown completed.")
-
-    # ==================================================================
-    # 对外接口 (Public APIs)
-    # ==================================================================
 
     async def export(self, event: EventT) -> None:
         """
-        异步导出（主事件循环内使用）。
-        支持背压，若队列满会阻塞。
+        异步导出接口。
+        - 状态校验：防止关闭期间的异常流出。
+        - 非阻塞异步背压：队列满时挂起当前协程。
         """
-        if not self._can_accept():
+        # 快速失败：避免在停机期间接收新数据导致状态混乱
+        if not self._is_running or self._is_shutting_down:
             self._on_drop(1, "exporter_not_running")
             return
 
-        # 防御性检查：防止跨线程误用导致死锁
-        if asyncio.get_running_loop() != self._loop:
-            self._on_drop(1, "wrong_thread")
-            raise RuntimeError(
-                "export() called from wrong thread. Use export_sync() instead."
-            )
-
         try:
+            # 压入底层异步队列，队列满时自动 await 挂起产生背压
             await self._batch_worker.put(event)
-        except (RuntimeError, asyncio.QueueFull):
-            # QueueFull 理论上不会发生，因为 put 是阻塞的，除非设置了 maxsize 且满了
-            self._on_drop(1, "queue_full_or_closed")
-
-    def export_sync(self, event: EventT) -> None:
-        """
-        同步导出（跨线程安全）。
-        适用于 WSGI/ThreadPool 环境。
-        """
-        target_loop = self._loop
-        if not self._can_accept() or target_loop is None:
-            self._on_drop(1, "exporter_not_running")
-            return
-
-        # 如果在同一个 loop 线程内，直接执行
-        if self._is_same_loop():
-            self._put_nowait(event)
-            return
-
-        # 跨线程投递
-        try:
-            target_loop.call_soon_threadsafe(self._put_nowait, event)
-        except RuntimeError as e:
-            # 通常发生在 loop 已关闭的情况下
-            self._on_drop(1, "loop_closed")
-
-    # ==================================================================
-    # 内部逻辑 (Internal Logic)
-    # ==================================================================
+        except (RuntimeError, asyncio.QueueFull, ConnectionError) as e:
+            # 移除了 GeneratorExit，该异常在纯 asyncio 上下文中极少出现
+            reason = f"queue_unavailable:{type(e).__name__}"
+            self._on_drop(1, reason)
+        except Exception as e:
+            # 兜底异常处理，防止未捕获异常炸毁事件循环
+            self._on_drop(1, "unexpected_export_error")
+            logger.error(f"Unexpected error in export: {e}", exc_info=True)
 
     async def _flush_batch(self, batch: List[EventT]) -> None:
-        """
-        核心回调：由 AsyncBatchProcessor 触发。
-        负责序列化并发送数据。
-        """
+        """底层消费回调：纯异步单线程序列化与发送"""
         if not batch:
             return
 
         try:
-            # 1. 序列化：调用外部注入的逻辑
-            payloads = [self.serializer(event) for event in batch]
-            # 2. 传输：调用 Transport
+            # 1. 序列化阶段：直接在当前协程流式执行
+            payloads = self._serialize_batch_safe(batch)
+
+            # 如果序列化全部失败，直接返回
+            if not payloads:
+                logger.debug(
+                    "All events in batch failed serialization. Dropping batch."
+                )
+                return
+
+            # 2. 发送阶段：异步网络 IO 发送
             await self.transport.send(payloads)
+
         except asyncio.CancelledError:
-            # 必须重新抛出，确保批量处理器能正确响应取消信号
+            # 显式记录被取消时的批次大小，用于审计
             self._on_drop(len(batch), "task_cancelled")
+            logger.warning(f"Flush task cancelled. {len(batch)} events dropped.")
             raise
-        except Exception:
-            # 故障隔离：通知外部这批数据丢失了
+
+        except Exception as e:
             self._on_drop(len(batch), "transport_error")
             logger.critical(
-                f"Transport send failed. Notifying drop of {len(batch)} events.",
+                f"Transport send failed. Notifying drop of {len(batch)} events. "
+                f"Error: {e}",
                 exc_info=True,
             )
-
-    def _put_nowait(self, event: EventT) -> None:
-        """
-        内部非阻塞写入（必须运行在 loop 线程内）。
-        """
-        if not self._can_accept_nolock():
-            self._on_drop(1, "shutting_down")
-            return
-        try:
-            self._batch_worker.put_nowait(event)
-        except (RuntimeError, asyncio.QueueFull):
-            self._on_drop(1, "queue_put_failed")
-
-    def _can_accept(self) -> bool:
-        """对外接口使用的状态检查"""
-        return self._is_running and not self._is_shutting_down
-
-    def _can_accept_nolock(self) -> bool:
-        """内部使用，假设调用方已处理线程安全问题"""
-        return self._is_running and not self._is_shutting_down
-
-    def _is_same_loop(self) -> bool:
-        """判断当前线程是否为 exporter 所属的事件循环线程"""
-        try:
-            return asyncio.get_running_loop() == self._loop
-        except RuntimeError:
-            return False
